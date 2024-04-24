@@ -201,7 +201,7 @@ func (d *ceph) Create() error {
 			// ceph.osd.force_reuse is deprecated and should not be used. OSD pools are a logical
 			// construct there is no good reason not to create one for dedicated use by LXD.
 			if shared.IsFalseOrEmpty(d.config["ceph.osd.force_reuse"]) {
-				return fmt.Errorf("Pool '%s' in cluster '%s' seems to be in use by another LXD instance. Use 'ceph.osd.force_reuse=true' to force", d.config["ceph.osd.pool_name"], d.config["ceph.cluster_name"])
+				return fmt.Errorf("Pool '%s' in cluster '%s' seems to be in use by another LXD instance", d.config["ceph.osd.pool_name"], d.config["ceph.cluster_name"])
 			}
 
 			d.config["volatile.pool.pristine"] = "false"
@@ -454,24 +454,38 @@ func (d *ceph) MigrationTypes(contentType ContentType, refresh bool, copySnapsho
 	}
 
 	if refresh {
-		var transportType migration.MigrationFSType
-
 		if IsContentBlock(contentType) {
-			transportType = migration.MigrationFSType_BLOCK_AND_RSYNC
-		} else {
-			transportType = migration.MigrationFSType_RSYNC
+			return []migration.Type{
+				{
+					FSType:   migration.MigrationFSType_RBD_AND_RSYNC,
+					Features: rsyncFeatures,
+				},
+				{
+					FSType:   migration.MigrationFSType_BLOCK_AND_RSYNC,
+					Features: rsyncFeatures,
+				},
+			}
 		}
 
 		return []migration.Type{
 			{
-				FSType:   transportType,
+				FSType:   migration.MigrationFSType_RSYNC,
 				Features: rsyncFeatures,
 			},
 		}
 	}
 
-	if contentType == ContentTypeBlock {
+	if IsContentBlock(contentType) {
 		return []migration.Type{
+			// Prefer to use RBD_AND_RSYNC for the initial migration.
+			{
+				FSType:   migration.MigrationFSType_RBD_AND_RSYNC,
+				Features: rsyncFeatures,
+			},
+			// If RBD_AND_RSYNC is not supported by the target it will fall back to BLOCK_AND_RSYNC
+			// as RBD wasn't sent as the preferred method by the source.
+			// If the source sends RBD as the preferred method the target will accept RBD
+			// as it's in the list of supported migration types.
 			{
 				FSType: migration.MigrationFSType_RBD,
 			},

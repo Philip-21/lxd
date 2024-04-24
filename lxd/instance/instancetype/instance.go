@@ -559,12 +559,25 @@ var InstanceConfigKeysContainer = map[string]func(value string) error{
 
 	// lxdmeta:generate(entities=instance; group=miscellaneous; key=linux.kernel_modules)
 	// Specify the kernel modules as a comma-separated list.
+	//
+	// The modules are loaded before the instance starts, or they can be loaded by a privileged user if {config:option}`instance-miscellaneous:linux.kernel_modules.load` is set to `ondemand`.
 	// ---
 	//  type: string
 	//  liveupdate: yes
 	//  condition: container
-	//  shortdesc: Kernel modules to load before starting the instance
+	//  shortdesc: Kernel modules to load or allow loading
 	"linux.kernel_modules": validate.IsAny,
+
+	// lxdmeta:generate(entities=instance; group=miscellaneous; key=linux.kernel_modules.load)
+	// This option specifies how to load the kernel modules that are specified in {config:option}`instance-miscellaneous:linux.kernel_modules`.
+	// Possible values are `boot` (load the modules when booting the container) and `ondemand` (intercept the `finit_modules()` syscall and allow a privileged user in the container's user namespace to load the modules).
+	// ---
+	//  type: string
+	//  defaultdesc: `boot`
+	//  liveupdate: no
+	//  condition: container
+	//  shortdesc: How to load kernel modules
+	"linux.kernel_modules.load": validate.Optional(validate.IsOneOf("boot", "ondemand")),
 
 	// lxdmeta:generate(entities=instance; group=migration; key=migration.incremental.memory)
 	// Using incremental memory transfer of the instance's memory can reduce downtime.
@@ -732,10 +745,6 @@ var InstanceConfigKeysContainer = map[string]func(value string) error{
 	//  shortdesc: List of syscalls to allow
 	"security.syscalls.allow": validate.IsAny,
 
-	"security.syscalls.blacklist_default": validate.Optional(validate.IsBool),
-	"security.syscalls.blacklist_compat":  validate.Optional(validate.IsBool),
-	"security.syscalls.blacklist":         validate.IsAny,
-
 	// lxdmeta:generate(entities=instance; group=security; key=security.syscalls.deny_default)
 	//
 	// ---
@@ -835,7 +844,7 @@ var InstanceConfigKeysContainer = map[string]func(value string) error{
 	//  shortdesc: Whether to use idmapped mounts for syscall interception
 	"security.syscalls.intercept.mount.shift": validate.Optional(validate.IsBool),
 
-	// lxdmeta:generate(entities=instance; group=security; key=security.syscalls.intercept.sched_setcheduler)
+	// lxdmeta:generate(entities=instance; group=security; key=security.syscalls.intercept.sched_setscheduler)
 	// This system call allows increasing process priority.
 	// ---
 	//  type: bool
@@ -864,8 +873,6 @@ var InstanceConfigKeysContainer = map[string]func(value string) error{
 	//  condition: container
 	//  shortdesc: Whether to handle the `sysinfo` system call
 	"security.syscalls.intercept.sysinfo": validate.Optional(validate.IsBool),
-
-	"security.syscalls.whitelist": validate.IsAny,
 
 	// lxdmeta:generate(entities=instance; group=volatile; key=volatile.last_state.idmap)
 	//

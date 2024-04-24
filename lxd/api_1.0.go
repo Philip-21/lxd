@@ -124,6 +124,16 @@ var api10 = []APIEndpoint{
 	warningsCmd,
 	warningCmd,
 	metricsCmd,
+	identitiesCmd,
+	identitiesByAuthenticationMethodCmd,
+	identityCmd,
+	authGroupsCmd,
+	authGroupCmd,
+	identityProviderGroupsCmd,
+	identityProviderGroupCmd,
+	permissionsCmd,
+	storageVolumesCmd,
+	storageVolumesTypeCmd,
 }
 
 // swagger:operation GET /1.0?public server server_get_untrusted
@@ -226,14 +236,11 @@ func api10Get(d *Daemon, r *http.Request) response.Response {
 		AuthMethods:   authMethods,
 	}
 
-	// If untrusted, return now
-	if d.checkTrustedClient(r) != nil {
-		return response.SyncResponseETag(true, srv, nil)
-	}
-
-	// If not authorized, return now.
+	// If not authorized, return now. Untrusted users are not authorized.
 	err := s.Authorizer.CheckPermission(r.Context(), r, entity.ServerURL(), auth.EntitlementCanView)
-	if err != nil {
+	if err != nil && auth.IsDeniedError(err) {
+		return response.SyncResponseETag(true, srv, nil)
+	} else if err != nil {
 		return response.SmartError(err)
 	}
 
@@ -378,14 +385,15 @@ func api10Get(d *Daemon, r *http.Request) response.Response {
 	fullSrv.AuthUserName = requestor.Username
 	fullSrv.AuthUserMethod = requestor.Protocol
 
-	err = s.Authorizer.CheckPermission(r.Context(), r, entity.ServerURL(), auth.EntitlementCanViewConfiguration)
-	if err == nil {
+	// Only allow identities that can edit configuration to view it as sensitive information may be stored there.
+	err = s.Authorizer.CheckPermission(r.Context(), r, entity.ServerURL(), auth.EntitlementCanEdit)
+	if err != nil && !auth.IsDeniedError(err) {
+		return response.SmartError(err)
+	} else if err == nil {
 		fullSrv.Config, err = daemonConfigRender(s)
 		if err != nil {
 			return response.InternalError(err)
 		}
-	} else if !api.StatusErrorCheck(err, http.StatusForbidden) {
-		return response.SmartError(err)
 	}
 
 	return response.SyncResponseETag(true, fullSrv, fullSrv.Config)
@@ -995,7 +1003,12 @@ func doAPI10UpdateTriggers(d *Daemon, nodeChanged, clusterChanged map[string]str
 			d.oidcVerifier = nil
 		} else {
 			var err error
-			d.oidcVerifier, err = oidc.NewVerifier(oidcIssuer, oidcClientID, oidcAudience, s.ServerCert, d.identityCache, &oidc.Opts{GroupsClaim: oidcGroupsClaim})
+
+			httpClientFunc := func() (*http.Client, error) {
+				return util.HTTPClient("", d.proxy)
+			}
+
+			d.oidcVerifier, err = oidc.NewVerifier(oidcIssuer, oidcClientID, oidcAudience, s.ServerCert, d.identityCache, httpClientFunc, &oidc.Opts{GroupsClaim: oidcGroupsClaim})
 			if err != nil {
 				return fmt.Errorf("Failed creating verifier: %w", err)
 			}

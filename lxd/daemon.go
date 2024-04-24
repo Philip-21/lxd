@@ -25,6 +25,7 @@ import (
 	liblxc "github.com/lxc/go-lxc"
 	"golang.org/x/sys/unix"
 
+	"github.com/canonical/lxd/client"
 	"github.com/canonical/lxd/lxd/acme"
 	"github.com/canonical/lxd/lxd/apparmor"
 	"github.com/canonical/lxd/lxd/auth"
@@ -46,6 +47,7 @@ import (
 	"github.com/canonical/lxd/lxd/instance"
 	instanceDrivers "github.com/canonical/lxd/lxd/instance/drivers"
 	"github.com/canonical/lxd/lxd/instance/instancetype"
+	"github.com/canonical/lxd/lxd/lifecycle"
 	"github.com/canonical/lxd/lxd/loki"
 	"github.com/canonical/lxd/lxd/maas"
 	networkZone "github.com/canonical/lxd/lxd/network/zone"
@@ -236,13 +238,17 @@ type APIEndpointAction struct {
 
 // allowAuthenticated is an AccessHandler which allows only authenticated requests. This should be used in conjunction
 // with further access control within the handler (e.g. to filter resources the user is able to view/edit).
-func allowAuthenticated(d *Daemon, r *http.Request) response.Response {
-	err := d.checkTrustedClient(r)
+func allowAuthenticated(_ *Daemon, r *http.Request) response.Response {
+	trusted, err := request.GetCtxValue[bool](r.Context(), request.CtxTrusted)
 	if err != nil {
 		return response.SmartError(err)
 	}
 
-	return response.EmptySyncResponse
+	if trusted {
+		return response.EmptySyncResponse
+	}
+
+	return response.Forbidden(nil)
 }
 
 // allowPermission is a wrapper to check access against a given object, an object being an image, instance, network, etc.
@@ -289,20 +295,6 @@ func allowPermission(entityType entity.Type, entitlement auth.Entitlement, muxVa
 
 		return response.EmptySyncResponse
 	}
-}
-
-// Convenience function around Authenticate.
-func (d *Daemon) checkTrustedClient(r *http.Request) error {
-	trusted, _, _, _, err := d.Authenticate(nil, r)
-	if !trusted || err != nil {
-		if err != nil {
-			return err
-		}
-
-		return fmt.Errorf("Not authorized")
-	}
-
-	return nil
 }
 
 // Authenticate validates an incoming http Request
@@ -363,7 +355,7 @@ func (d *Daemon) Authenticate(w http.ResponseWriter, r *http.Request) (trusted b
 			return false, "", "", nil, fmt.Errorf("Failed OIDC Authentication: %w", err)
 		}
 
-		err = d.handleOIDCAuthenticationResult(result)
+		err = d.handleOIDCAuthenticationResult(r, result)
 		if err != nil {
 			return false, "", "", nil, fmt.Errorf("Failed to process OIDC authentication result: %w", err)
 		}
@@ -377,7 +369,7 @@ func (d *Daemon) Authenticate(w http.ResponseWriter, r *http.Request) (trusted b
 	// Validate metrics certificates.
 	if r.URL.Path == "/1.0/metrics" {
 		for _, i := range r.TLS.PeerCertificates {
-			trusted, username := util.CheckTrustState(*i, d.identityCache.X509Certificates(api.IdentityTypeCertificateMetrics), d.endpoints.NetworkCert(), trustCACertificates)
+			trusted, username := util.CheckTrustState(*i, d.identityCache.X509Certificates(api.IdentityTypeCertificateMetricsRestricted, api.IdentityTypeCertificateMetricsUnrestricted), d.endpoints.NetworkCert(), trustCACertificates)
 			if trusted {
 				return true, username, api.AuthenticationMethodTLS, nil, nil
 			}
@@ -398,7 +390,9 @@ func (d *Daemon) Authenticate(w http.ResponseWriter, r *http.Request) (trusted b
 // handleOIDCAuthenticationResult checks the identity cache for the OIDC identity by their email address. If no identity
 // is found, an identity is added with that email. If an identity is found but the OIDC subject is different to the
 // expected value, the identity is updated with the new subject.
-func (d *Daemon) handleOIDCAuthenticationResult(result *oidc.AuthenticationResult) error {
+func (d *Daemon) handleOIDCAuthenticationResult(r *http.Request, result *oidc.AuthenticationResult) error {
+	var action lifecycle.IdentityAction
+
 	id, err := d.identityCache.Get(api.AuthenticationMethodOIDC, result.Email)
 	if err != nil && !api.StatusErrorCheck(err, http.StatusNotFound) {
 		return fmt.Errorf("Failed getting OIDC identity from cache: %w", err)
@@ -424,7 +418,7 @@ func (d *Daemon) handleOIDCAuthenticationResult(result *oidc.AuthenticationResul
 			return fmt.Errorf("Failed to add new OIDC identity to database: %w", err)
 		}
 
-		updateIdentityCache(d)
+		action = lifecycle.IdentityCreated
 	} else if id.Subject != result.Subject || id.Name != result.Name {
 		// The OIDC subject of the user with this email address has changed (this should be rare). Replace the
 		// subject in the identity metadata and refresh the cache.
@@ -447,7 +441,29 @@ func (d *Daemon) handleOIDCAuthenticationResult(result *oidc.AuthenticationResul
 			return fmt.Errorf("Failed to update OIDC identity information: %w", err)
 		}
 
-		updateIdentityCache(d)
+		action = lifecycle.IdentityUpdated
+	}
+
+	if action != "" {
+		// Notify other nodes about the new identity.
+		s := d.State()
+		notifier, err := cluster.NewNotifier(s, s.Endpoints.NetworkCert(), s.ServerCert(), cluster.NotifyAlive)
+		if err != nil {
+			return fmt.Errorf("Failed to notify cluster members of new or updated OIDC identity: %w", err)
+		}
+
+		err = notifier(func(client lxd.InstanceServer) error {
+			_, _, err := client.RawQuery(http.MethodPost, "/internal/identity-cache-refresh", nil, "")
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("Failed to notify cluster members of new or updated OIDC identity: %w", err)
+		}
+
+		lc := action.Event(api.AuthenticationMethodOIDC, result.Email, request.CreateRequestor(r), nil)
+		s.Events.SendLifecycle(api.ProjectDefaultName, lc)
+
+		s.UpdateIdentityCache()
 	}
 
 	return nil
@@ -543,10 +559,18 @@ func (d *Daemon) createCmd(restAPI *mux.Router, version string, c APIEndpoint) {
 					_ = d.oidcVerifier.WriteHeaders(w)
 				}
 
+				// Return 401 Unauthorized error. This indicates to the client that it needs to use the
+				// headers we've set above to get an access token and try again.
 				_ = response.Unauthorized(err).Render(w)
 				return
 			}
+
+			_ = response.Forbidden(err).Render(w)
+			return
 		}
+
+		// Set the "trusted" value in the request context.
+		request.SetCtxValue(r, request.CtxTrusted, trusted)
 
 		// Reject internal queries to remote, non-cluster, clients
 		if version == "internal" && !shared.ValueInSlice(protocol, []string{"unix", "cluster"}) {
@@ -1214,6 +1238,13 @@ func (d *Daemon) init() error {
 		return fmt.Errorf("Failed to initialize global database: %w", err)
 	}
 
+	// Load the embedded OpenFGA authorizer. This cannot be loaded until after the cluster database is initialised,
+	// so the TLS authorizer must be loaded first to set up clustering.
+	d.authorizer, err = auth.LoadAuthorizer(d.shutdownCtx, auth.DriverEmbeddedOpenFGA, logger.Log, d.identityCache, auth.WithOpenFGADatastore(db.NewOpenFGAStore(d.db.Cluster)))
+	if err != nil {
+		return err
+	}
+
 	d.firewall = firewall.New()
 	logger.Info("Firewall loaded driver", logger.Ctx{"driver": d.firewall})
 
@@ -1364,8 +1395,6 @@ func (d *Daemon) init() error {
 	bgpRouterID := d.localConfig.BGPRouterID()
 	bgpASN := int64(0)
 
-	dnsAddress := d.localConfig.DNSAddress()
-
 	maasAPIURL := ""
 	maasAPIKey := ""
 	maasMachine := d.localConfig.MAASMachine()
@@ -1403,7 +1432,11 @@ func (d *Daemon) init() error {
 
 	// Setup OIDC authentication.
 	if oidcIssuer != "" && oidcClientID != "" {
-		d.oidcVerifier, err = oidc.NewVerifier(oidcIssuer, oidcClientID, oidcAudience, d.serverCert, d.identityCache, &oidc.Opts{GroupsClaim: oidcGroupsClaim})
+		httpClientFunc := func() (*http.Client, error) {
+			return util.HTTPClient("", d.proxy)
+		}
+
+		d.oidcVerifier, err = oidc.NewVerifier(oidcIssuer, oidcClientID, oidcAudience, d.serverCert, d.identityCache, httpClientFunc, &oidc.Opts{GroupsClaim: oidcGroupsClaim})
 		if err != nil {
 			return err
 		}
@@ -1456,14 +1489,6 @@ func (d *Daemon) init() error {
 
 		return resp, nil
 	})
-	if dnsAddress != "" {
-		err := d.dns.Start(dnsAddress)
-		if err != nil {
-			return err
-		}
-
-		logger.Info("Started DNS server")
-	}
 
 	// Setup the networks.
 	logger.Infof("Initializing networks")
@@ -1473,6 +1498,16 @@ func (d *Daemon) init() error {
 	}
 
 	// Setup tertiary listeners that may use managed network addresses and must be started after networks.
+	dnsAddress := d.localConfig.DNSAddress()
+	if dnsAddress != "" {
+		err = d.dns.Start(dnsAddress)
+		if err != nil {
+			return err
+		}
+
+		logger.Info("Started DNS server")
+	}
+
 	metricsAddress := d.localConfig.MetricsAddress()
 	if metricsAddress != "" {
 		err = d.endpoints.UpMetrics(metricsAddress)
@@ -1665,9 +1700,7 @@ func (d *Daemon) init() error {
 	d.tasks.Start(d.shutdownCtx)
 
 	// Restore instances
-	if !d.db.Cluster.LocalNodeIsEvacuated() {
-		instancesStart(d.State(), instances)
-	}
+	instancesStart(d.State(), instances)
 
 	// Re-balance in case things changed while LXD was down
 	deviceTaskBalance(d.State())

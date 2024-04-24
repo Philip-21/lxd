@@ -35,6 +35,13 @@ To add a `proxy` device, use the following command:
 
     lxc config device add <instance_name> <device_name> proxy listen=<type>:<addr>:<port>[-<port>][,<port>] connect=<type>:<addr>:<port> bind=<host/instance_name>
 
+```{tip}
+Using a proxy device in NAT mode is very similar to adding a {ref}`network forward <network-forwards>`.
+
+The difference is that network forwards are applied on a network level, while a proxy device is added for an instance.
+In addition, network forwards cannot be used to proxy traffic between different connection types.
+```
+
 (devices-proxy-nat-mode)=
 ## NAT mode
 
@@ -73,15 +80,24 @@ However, when using NAT mode, you must specify an IP address on the LXD host.
 
 `proxy` devices have the following device options:
 
-Key             | Type      | Default       | Required  | Description
-:--             | :--       | :--           | :--       | :--
-`bind`          | string    | `host`        | no        | Which side to bind on (`host`/`instance`)
-`connect`       | string    | -             | yes       | The address and port to connect to (`<type>:<addr>:<port>[-<port>][,<port>]`)
-`gid`           | int       | `0`           | no        | GID of the owner of the listening Unix socket
-`listen`        | string    | -             | yes       | The address and port to bind and listen (`<type>:<addr>:<port>[-<port>][,<port>]`)
-`mode`          | int       | `0644`        | no        | Mode for the listening Unix socket
-`nat`           | bool      | `false`       | no        | Whether to optimize proxying via NAT (requires that the instance NIC has a static IP address)
-`proxy_protocol`| bool      | `false`       | no        | Whether to use the HAProxy PROXY protocol to transmit sender information
-`security.gid`  | int       | `0`           | no        | What GID to drop privilege to
-`security.uid`  | int       | `0`           | no        | What UID to drop privilege to
-`uid`           | int       | `0`           | no        | UID of the owner of the listening Unix socket
+% Include content from [../config_options.txt](../config_options.txt)
+```{include} ../config_options.txt
+    :start-after: <!-- config group device-proxy-device-conf start -->
+    :end-before: <!-- config group device-proxy-device-conf end -->
+```
+
+## Configuration examples
+
+Add a `proxy` device that forwards traffic from one address (the `listen` address) to another address (the `connect` address) using NAT mode:
+
+    lxc config device add <instance_name> <device_name> proxy nat=true listen=tcp:<ip_address>:<port> connect=tcp:<ip_address>:<port>
+
+Add a `proxy` device that forwards traffic going to a specific IP to a Unix socket on an instance that might not have a network connection:
+
+    lxc config device add <instance_name> <device_name> proxy listen=tcp:<ip_address>:<port> connect=unix:/<socket_path_on_instance>
+
+Add a `proxy` device that forwards traffic going to a Unix socket on an instance that might not have a network connection to a specific IP address:
+
+    lxc config device add <instance_name> <device_name> proxy bind=instance listen=unix:/<socket_path_on_instance> connect=tcp:<ip_address>:<port>
+
+See {ref}`instances-configure-devices` for more information.

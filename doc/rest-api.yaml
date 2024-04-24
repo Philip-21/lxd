@@ -1,9 +1,96 @@
 definitions:
+    AuthGroup:
+        properties:
+            description:
+                description: Description is a short description of the group.
+                example: Viewers of instance c1 in the default project.
+                type: string
+                x-go-name: Description
+            identities:
+                additionalProperties:
+                    items:
+                        type: string
+                    type: array
+                description: Identities is a map of authentication method to slice of identity identifiers.
+                type: object
+                x-go-name: Identities
+            identity_provider_groups:
+                description: |-
+                    IdentityProviderGroups are a list of groups from the IdP whose mapping
+                    includes this group.
+                example:
+                    - sales
+                    - operations
+                items:
+                    type: string
+                type: array
+                x-go-name: IdentityProviderGroups
+            name:
+                description: Name is the name of the group.
+                example: default-c1-viewers
+                type: string
+                x-go-name: Name
+            permissions:
+                description: Permissions are a list of permissions.
+                items:
+                    $ref: '#/definitions/Permission'
+                type: array
+                x-go-name: Permissions
+        title: AuthGroup is the type for a LXD group.
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    AuthGroupPost:
+        properties:
+            name:
+                description: Name is the name of the group.
+                example: default-c1-viewers
+                type: string
+                x-go-name: Name
+        title: AuthGroupPost is used for renaming a group.
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    AuthGroupPut:
+        properties:
+            description:
+                description: Description is a short description of the group.
+                example: Viewers of instance c1 in the default project.
+                type: string
+                x-go-name: Description
+            permissions:
+                description: Permissions are a list of permissions.
+                items:
+                    $ref: '#/definitions/Permission'
+                type: array
+                x-go-name: Permissions
+        title: AuthGroupPut contains the editable fields of a group.
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    AuthGroupsPost:
+        properties:
+            description:
+                description: Description is a short description of the group.
+                example: Viewers of instance c1 in the default project.
+                type: string
+                x-go-name: Description
+            name:
+                description: Name is the name of the group.
+                example: default-c1-viewers
+                type: string
+                x-go-name: Name
+            permissions:
+                description: Permissions are a list of permissions.
+                items:
+                    $ref: '#/definitions/Permission'
+                type: array
+                x-go-name: Permissions
+        title: AuthGroupsPost is used for creating a new group.
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
     Certificate:
         description: Certificate represents a LXD certificate
         properties:
             certificate:
-                description: The certificate itself, as PEM encoded X509 (or as base64 encoded X509 on POST)
+                description: The certificate itself, as PEM encoded X509 certificate
                 example: X509 PEM certificate
                 type: string
                 x-go-name: Certificate
@@ -78,7 +165,7 @@ definitions:
         description: CertificatePut represents the modifiable fields of a LXD certificate
         properties:
             certificate:
-                description: The certificate itself, as PEM encoded X509 (or as base64 encoded X509 on POST)
+                description: The certificate itself, as PEM encoded X509 certificate
                 example: X509 PEM certificate
                 type: string
                 x-go-name: Certificate
@@ -113,8 +200,8 @@ definitions:
         description: CertificatesPost represents the fields of a new LXD certificate
         properties:
             certificate:
-                description: The certificate itself, as PEM encoded X509 (or as base64 encoded X509 on POST)
-                example: X509 PEM certificate
+                description: The certificate itself, as base64 encoded X509 PEM certificate
+                example: base64 encoded X509 PEM certificate
                 type: string
                 x-go-name: Certificate
             name:
@@ -614,6 +701,157 @@ definitions:
                 example: lifecycle
                 type: string
                 x-go-name: Type
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    Identity:
+        properties:
+            authentication_method:
+                description: |-
+                    AuthenticationMethod is the authentication method that the identity
+                    authenticates to LXD with.
+                example: tls
+                type: string
+                x-go-name: AuthenticationMethod
+            groups:
+                description: Groups is the list of groups for which the identity is a member.
+                example:
+                    - foo
+                    - bar
+                items:
+                    type: string
+                type: array
+                x-go-name: Groups
+            id:
+                description: Identifier is a unique identifier for the identity (e.g. certificate fingerprint or email for OIDC).
+                example: jane.doe@example.com
+                type: string
+                x-go-name: Identifier
+            name:
+                description: |-
+                    Name is the Name claim of the identity if authenticated via OIDC, or the name
+                    of the certificate if authenticated with TLS.
+                example: Jane Doe
+                type: string
+                x-go-name: Name
+            type:
+                description: Type is the type of identity.
+                example: oidc-service-account
+                type: string
+                x-go-name: Type
+        title: Identity is the type for an authenticated party that can make requests to the HTTPS API.
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    IdentityInfo:
+        description: These fields can only be evaluated for the currently authenticated identity.
+        properties:
+            authentication_method:
+                description: |-
+                    AuthenticationMethod is the authentication method that the identity
+                    authenticates to LXD with.
+                example: tls
+                type: string
+                x-go-name: AuthenticationMethod
+            effective_groups:
+                description: |-
+                    Effective groups is the combined and deduplicated list of LXD groups that the identity is a direct member of, and
+                    the LXD groups that the identity is an effective member of via identity provider group mappings.
+                example:
+                    - foo
+                    - bar
+                items:
+                    type: string
+                type: array
+                x-go-name: EffectiveGroups
+            effective_permissions:
+                description: |-
+                    Effective permissions is the combined and deduplicated list of permissions that the identity has by virtue of
+                    direct membership to a LXD group, or effective membership of a LXD group via identity provider group mappings.
+                items:
+                    $ref: '#/definitions/Permission'
+                type: array
+                x-go-name: EffectivePermissions
+            groups:
+                description: Groups is the list of groups for which the identity is a member.
+                example:
+                    - foo
+                    - bar
+                items:
+                    type: string
+                type: array
+                x-go-name: Groups
+            id:
+                description: Identifier is a unique identifier for the identity (e.g. certificate fingerprint or email for OIDC).
+                example: jane.doe@example.com
+                type: string
+                x-go-name: Identifier
+            name:
+                description: |-
+                    Name is the Name claim of the identity if authenticated via OIDC, or the name
+                    of the certificate if authenticated with TLS.
+                example: Jane Doe
+                type: string
+                x-go-name: Name
+            type:
+                description: Type is the type of identity.
+                example: oidc-service-account
+                type: string
+                x-go-name: Type
+        title: IdentityInfo expands an Identity to include effective group membership and effective permissions.
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    IdentityProviderGroup:
+        properties:
+            groups:
+                description: Groups are the groups the IdP group resolves to.
+                example:
+                    - foo
+                    - bar
+                items:
+                    type: string
+                type: array
+                x-go-name: Groups
+            name:
+                description: Name is the name of the IdP group.
+                type: string
+                x-go-name: Name
+        title: IdentityProviderGroup represents a mapping between LXD groups and groups defined by an identity provider.
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    IdentityProviderGroupPost:
+        properties:
+            name:
+                description: Name is the name of the IdP group.
+                type: string
+                x-go-name: Name
+        title: IdentityProviderGroupPost is used for renaming an IdentityProviderGroup.
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    IdentityProviderGroupPut:
+        properties:
+            groups:
+                description: Groups are the groups the IdP group resolves to.
+                example:
+                    - foo
+                    - bar
+                items:
+                    type: string
+                type: array
+                x-go-name: Groups
+        title: IdentityProviderGroupPut contains the editable fields of an IdentityProviderGroup.
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    IdentityPut:
+        properties:
+            groups:
+                description: Groups is the list of groups for which the identity is a member.
+                example:
+                    - foo
+                    - bar
+                items:
+                    type: string
+                type: array
+                x-go-name: Groups
+        title: IdentityPut contains the editable fields of an IdentityInfo.
         type: object
         x-go-package: github.com/canonical/lxd/shared/api
     Image:
@@ -1389,11 +1627,6 @@ definitions:
                 example: foo
                 type: string
                 x-go-name: Project
-            restore:
-                description: If set, instance will be restored to the provided snapshot name
-                example: snap0
-                type: string
-                x-go-name: Restore
             stateful:
                 description: Whether the instance currently has saved state on disk
                 example: false
@@ -1683,11 +1916,6 @@ definitions:
                 example: foo
                 type: string
                 x-go-name: Project
-            restore:
-                description: If set, instance will be restored to the provided snapshot name
-                example: snap0
-                type: string
-                x-go-name: Restore
             snapshots:
                 description: List of snapshots.
                 items:
@@ -3724,6 +3952,55 @@ definitions:
                 format: date-time
                 type: string
                 x-go-name: UpdatedAt
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    Permission:
+        properties:
+            entitlement:
+                description: Entitlement is the entitlement define for the entity type.
+                example: can_view
+                type: string
+                x-go-name: Entitlement
+            entity_type:
+                description: EntityType is the string representation of the entity type.
+                example: instance
+                type: string
+                x-go-name: EntityType
+            url:
+                description: EntityReference is the URL of the entity that the permission applies to.
+                example: /1.0/instances/c1?project=default
+                type: string
+                x-go-name: EntityReference
+        title: Permission represents a permission that may be granted to a group.
+        type: object
+        x-go-package: github.com/canonical/lxd/shared/api
+    PermissionInfo:
+        properties:
+            entitlement:
+                description: Entitlement is the entitlement define for the entity type.
+                example: can_view
+                type: string
+                x-go-name: Entitlement
+            entity_type:
+                description: EntityType is the string representation of the entity type.
+                example: instance
+                type: string
+                x-go-name: EntityType
+            groups:
+                description: Groups is a list of groups that have the Entitlement on the Entity.
+                example:
+                    - foo
+                    - bar
+                items:
+                    type: string
+                type: array
+                x-go-name: Groups
+            url:
+                description: EntityReference is the URL of the entity that the permission applies to.
+                example: /1.0/instances/c1?project=default
+                type: string
+                x-go-name: EntityReference
+        title: PermissionInfo expands a Permission to include any groups that may have the specified Permission.
         type: object
         x-go-package: github.com/canonical/lxd/shared/api
     Profile:
@@ -5925,16 +6202,16 @@ definitions:
                 example: foo
                 type: string
                 x-go-name: Name
+            pool:
+                description: Name of the pool the volume is using
+                example: '"default"'
+                type: string
+                x-go-name: Pool
             project:
                 description: Project containing the volume.
                 example: default
                 type: string
                 x-go-name: Project
-            restore:
-                description: Name of a snapshot to restore
-                example: snap0
-                type: string
-                x-go-name: Restore
             type:
                 description: Volume type
                 example: custom
@@ -6489,6 +6766,840 @@ paths:
             summary: Update the server configuration
             tags:
                 - server
+    /1.0/auth/groups:
+        get:
+            description: Returns a list of authorization groups (URLs).
+            operationId: auth_groups_get
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of endpoints
+                                example: |-
+                                    [
+                                      "/1.0/auth/groups/foo",
+                                      "/1.0/auth/groups/bar"
+                                    ]
+                                items:
+                                    type: string
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the groups
+            tags:
+                - auth_groups
+        post:
+            consumes:
+                - application/json
+            description: Creates a new authorization group.
+            operationId: auth_groups_post
+            parameters:
+                - description: Group request
+                  in: body
+                  name: group
+                  required: true
+                  schema:
+                    $ref: '#/definitions/AuthGroupsPost'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Create a new authorization group
+            tags:
+                - auth_groups
+    /1.0/auth/groups/{groupName}:
+        delete:
+            description: Deletes the authorization group
+            operationId: auth_group_delete
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Delete the authorization group
+            tags:
+                - auth_groups
+        get:
+            description: Gets a specific authorization group.
+            operationId: auth_group_get
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: ""
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                $ref: '#/definitions/AuthGroup'
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the authorization group
+            tags:
+                - auth_groups
+        patch:
+            consumes:
+                - application/json
+            description: Updates the editable fields of an authorization group
+            operationId: auth_group_patch
+            parameters:
+                - description: Update request
+                  in: body
+                  name: group
+                  schema:
+                    $ref: '#/definitions/AuthGroupPut'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Partially update the authorization group
+            tags:
+                - auth_groups
+        post:
+            consumes:
+                - application/json
+            description: Renames the authorization group
+            operationId: auth_group_post
+            parameters:
+                - description: Update request
+                  in: body
+                  name: group
+                  schema:
+                    $ref: '#/definitions/AuthGroupPost'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Rename the authorization group
+            tags:
+                - auth_groups
+        put:
+            consumes:
+                - application/json
+            description: Replaces the editable fields of an authorization group
+            operationId: auth_group_put
+            parameters:
+                - description: Update request
+                  in: body
+                  name: group
+                  schema:
+                    $ref: '#/definitions/AuthGroupPut'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Update the authorization group
+            tags:
+                - auth_groups
+    /1.0/auth/groups?recursion=1:
+        get:
+            description: Returns a list of authorization groups.
+            operationId: auth_groups_get_recursion1
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of auth groups
+                                items:
+                                    $ref: '#/definitions/AuthGroup'
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the groups
+            tags:
+                - auth_groups
+    /1.0/auth/identities:
+        get:
+            description: Returns a list of identities (URLs).
+            operationId: identities_get
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of endpoints
+                                example: |-
+                                    [
+                                      "/1.0/auth/identities/tls/e1e06266e36f67431c996d5678e66d732dfd12fe5073c161e62e6360619fc226",
+                                      "/1.0/auth/identities/oidc/auth0|4daf5e37ce230e455b64b65b"
+                                    ]
+                                items:
+                                    type: string
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the identities
+            tags:
+                - identities
+    /1.0/auth/identities/{authenticationMethod}:
+        get:
+            description: Returns a list of identities (URLs).
+            operationId: identities_get_by_auth_method
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of endpoints
+                                example: |-
+                                    [
+                                      "/1.0/auth/identities/tls/e1e06266e36f67431c996d5678e66d732dfd12fe5073c161e62e6360619fc226",
+                                      "/1.0/auth/identities/oidc/auth0|4daf5e37ce230e455b64b65b"
+                                    ]
+                                items:
+                                    type: string
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the identities
+            tags:
+                - identities
+    /1.0/auth/identities/{authenticationMethod}/{nameOrIdentifier}:
+        get:
+            description: Gets a specific identity.
+            operationId: identity_get
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                $ref: '#/definitions/Identity'
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the identity
+            tags:
+                - identities
+        patch:
+            consumes:
+                - application/json
+            description: Updates the editable fields of an identity
+            operationId: identity_patch
+            parameters:
+                - description: Update request
+                  in: body
+                  name: identity
+                  schema:
+                    $ref: '#/definitions/IdentityPut'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Partially update the identity
+            tags:
+                - identities
+        put:
+            consumes:
+                - application/json
+            description: Replaces the editable fields of an identity
+            operationId: identity_put
+            parameters:
+                - description: Update request
+                  in: body
+                  name: identity
+                  schema:
+                    $ref: '#/definitions/IdentityPut'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Update the identity
+            tags:
+                - identities
+    /1.0/auth/identities/{authenticationMethod}?recursion=1:
+        get:
+            description: Returns a list of identities.
+            operationId: identities_get_by_auth_method_recursion1
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of identities
+                                items:
+                                    $ref: '#/definitions/Identity'
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the identities
+            tags:
+                - identities
+    /1.0/auth/identities/current:
+        get:
+            description: Gets the identity of the requestor, including contextual authorization information.
+            operationId: identity_get_current
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                $ref: '#/definitions/IdentityInfo'
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the current identity
+            tags:
+                - identities
+    /1.0/auth/identities?recursion=1:
+        get:
+            description: Returns a list of identities.
+            operationId: identities_get_recursion1
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of identities
+                                items:
+                                    $ref: '#/definitions/Identity'
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the identities
+            tags:
+                - identities
+    /1.0/auth/identity-provider-groups:
+        get:
+            description: Returns a list of identity provider groups (URLs).
+            operationId: identity_provider_groups_get
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of endpoints
+                                example: |-
+                                    [
+                                      "/1.0/auth/identity-provider-groups/sales",
+                                      "/1.0/auth/identity-provider-groups/operations"
+                                    ]
+                                items:
+                                    type: string
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the identity provider groups
+            tags:
+                - identity_provider_groups
+        post:
+            consumes:
+                - application/json
+            description: Creates a new identity provider group.
+            operationId: identity_provider_groups_post
+            parameters:
+                - description: Identity provider request
+                  in: body
+                  name: group
+                  required: true
+                  schema:
+                    $ref: '#/definitions/IdentityProviderGroup'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Create a new identity provider group
+            tags:
+                - identity_provider_groups
+    /1.0/auth/identity-provider-groups/{idpGroupName}:
+        delete:
+            description: Deletes the identity provider group
+            operationId: identity_provider_group_delete
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Delete the identity provider group
+            tags:
+                - identity_provider_groups
+        get:
+            description: Gets a specific identity provider group.
+            operationId: identity_provider_group_get
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: ""
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                $ref: '#/definitions/IdentityProviderGroup'
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the identity provider group
+            tags:
+                - identity_provider_groups
+        patch:
+            consumes:
+                - application/json
+            description: Updates the editable fields of an identity provider group
+            operationId: identity_provider_group_patch
+            parameters:
+                - description: Update request
+                  in: body
+                  name: group
+                  schema:
+                    $ref: '#/definitions/IdentityProviderGroupPut'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Partially update the identity provider group
+            tags:
+                - identity_provider_groups
+        post:
+            consumes:
+                - application/json
+            description: Renames the identity provider group
+            operationId: identity_provider_group_post
+            parameters:
+                - description: Update request
+                  in: body
+                  name: group
+                  schema:
+                    $ref: '#/definitions/IdentityProviderGroupPost'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Rename the identity provider group
+            tags:
+                - identity_provider_groups
+        put:
+            consumes:
+                - application/json
+            description: Replaces the editable fields of an identity provider group
+            operationId: identity_provider_group_put
+            parameters:
+                - description: Update request
+                  in: body
+                  name: group
+                  schema:
+                    $ref: '#/definitions/IdentityProviderGroupPut'
+            produces:
+                - application/json
+            responses:
+                "200":
+                    $ref: '#/responses/EmptySyncResponse'
+                "400":
+                    $ref: '#/responses/BadRequest'
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Update the identity provider group
+            tags:
+                - identity_provider_groups
+    /1.0/auth/identity-provider-groups?recursion=1:
+        get:
+            description: Returns a list of identity provider groups.
+            operationId: identity_provider_groups_get_recursion1
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of identity provider groups
+                                items:
+                                    $ref: '#/definitions/IdentityProviderGroup'
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the groups
+            tags:
+                - identity_provider_groups
+    /1.0/auth/permissions:
+        get:
+            description: Returns a list of available permissions.
+            operationId: permissions_get
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+                - description: Type of entity
+                  example: instance
+                  in: query
+                  name: entityType
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of permissions
+                                items:
+                                    $ref: '#/definitions/Permission'
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the permissions
+            tags:
+                - permissions
+    /1.0/auth/permissions?recursion=1:
+        get:
+            description: Returns a list of available permissions (including groups that have those permissions).
+            operationId: permissions_get_recursion1
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+                - description: Type of entity
+                  example: instance
+                  in: query
+                  name: entity-type
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of permissions
+                                items:
+                                    $ref: '#/definitions/PermissionInfo'
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the permissions
+            tags:
+                - permissions
     /1.0/certificates:
         get:
             description: Returns a list of trusted certificates (URLs).
@@ -9118,22 +10229,28 @@ paths:
                 - description: Raw file content
                   in: body
                   name: raw_file
-                - description: File owner UID
+                - description: Base 10 32-bit integer for the file owner UID
                   example: 1000
                   in: header
                   name: X-LXD-uid
                   schema:
                     type: integer
-                - description: File owner GID
+                - description: Base 10 32-bit integer for the file owner GID
                   example: 1000
                   in: header
                   name: X-LXD-gid
                   schema:
                     type: integer
-                - description: File mode
+                - description: Base 10 (no leading `0`) or base 8 (leading `0`) unix permissions bits (other bits are truncated)
                   example: 420
                   in: header
                   name: X-LXD-mode
+                  schema:
+                    type: integer
+                - description: Comma-separated list of permissions to set for pre-existing files (0 or more of `uid`, `gid`, `mode`)
+                  example: uid,gid,mode
+                  in: header
+                  name: X-LXD-modify-perm
                   schema:
                     type: integer
                 - description: Type of file (file, symlink or directory)
@@ -13946,6 +15063,11 @@ paths:
                   in: query
                   name: project
                   type: string
+                - description: Indicates whether volumes from all projects should be returned
+                  example: true
+                  in: query
+                  name: all-projects
+                  type: bool
                 - description: Cluster member name
                   example: lxd01
                   in: query
@@ -14046,6 +15168,11 @@ paths:
                   in: query
                   name: project
                   type: string
+                - description: Indicates whether volumes from all projects should be returned
+                  example: true
+                  in: query
+                  name: all-projects
+                  type: bool
                 - description: Cluster member name
                   example: lxd01
                   in: query
@@ -14974,6 +16101,11 @@ paths:
                   in: query
                   name: project
                   type: string
+                - description: Indicates whether volumes from all projects should be returned
+                  example: true
+                  in: query
+                  name: all-projects
+                  type: bool
                 - description: Cluster member name
                   example: lxd01
                   in: query
@@ -15022,6 +16154,11 @@ paths:
                   in: query
                   name: project
                   type: string
+                - description: Indicates whether volumes from all projects should be returned
+                  example: true
+                  in: query
+                  name: all-projects
+                  type: bool
                 - description: Cluster member name
                   example: lxd01
                   in: query
@@ -15106,6 +16243,240 @@ paths:
                 "500":
                     $ref: '#/responses/InternalServerError'
             summary: Get the storage pools
+            tags:
+                - storage
+    /1.0/storage-volumes:
+        get:
+            description: Returns a list of storage volumes (URLs).
+            operationId: storage_volumes_get
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+                - description: Indicates whether volumes from all projects should be returned
+                  example: true
+                  in: query
+                  name: all-projects
+                  type: bool
+                - description: Cluster member name
+                  example: lxd01
+                  in: query
+                  name: target
+                  type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of endpoints
+                                example: |-
+                                    [
+                                      "/1.0/storage-pools/local/volumes/container/a1",
+                                      "/1.0/storage-pools/local/volumes/container/a2",
+                                      "/1.0/storage-pools/local/volumes/custom/backups",
+                                      "/1.0/storage-pools/local/volumes/custom/images"
+                                    ]
+                                items:
+                                    type: string
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the storage volumes
+            tags:
+                - storage
+    /1.0/storage-volumes/{type}:
+        get:
+            description: Returns a list of storage volumes (URLs) (type specific endpoint).
+            operationId: storage_pool_volumes_type_get
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+                - description: Indicates whether volumes from all projects should be returned
+                  example: true
+                  in: query
+                  name: all-projects
+                  type: bool
+                - description: Cluster member name
+                  example: lxd01
+                  in: query
+                  name: target
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of endpoints
+                                example: |-
+                                    [
+                                      "/1.0/storage-pools/local/volumes/custom/backups",
+                                      "/1.0/storage-pools/local/volumes/custom/images"
+                                    ]
+                                items:
+                                    type: string
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the storage volumes
+            tags:
+                - storage
+    /1.0/storage-volumes/{type}?recursion=1:
+        get:
+            description: Returns a list of storage volumes (structs) (type specific endpoint).
+            operationId: storage_pool_volumes_type_get_recursion1
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+                - description: Indicates whether volumes from all projects should be returned
+                  example: true
+                  in: query
+                  name: all-projects
+                  type: bool
+                - description: Cluster member name
+                  example: lxd01
+                  in: query
+                  name: target
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of storage volumes
+                                items:
+                                    $ref: '#/definitions/StorageVolume'
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the storage volumes
+            tags:
+                - storage
+    /1.0/storage-volumes?recursion=1:
+        get:
+            description: Returns a list of storage volumes (structs).
+            operationId: storage_pool_volumes_get_recursion1
+            parameters:
+                - description: Project name
+                  example: default
+                  in: query
+                  name: project
+                  type: string
+                - description: Indicates whether volumes from all projects should be returned
+                  example: true
+                  in: query
+                  name: all-projects
+                  type: bool
+                - description: Cluster member name
+                  example: lxd01
+                  in: query
+                  name: target
+                  type: string
+                - description: Collection filter
+                  example: default
+                  in: query
+                  name: filter
+                  type: string
+            produces:
+                - application/json
+            responses:
+                "200":
+                    description: API endpoints
+                    schema:
+                        description: Sync response
+                        properties:
+                            metadata:
+                                description: List of storage volumes
+                                items:
+                                    $ref: '#/definitions/StorageVolume'
+                                type: array
+                            status:
+                                description: Status description
+                                example: Success
+                                type: string
+                            status_code:
+                                description: Status code
+                                example: 200
+                                type: integer
+                            type:
+                                description: Response type
+                                example: sync
+                                type: string
+                        type: object
+                "403":
+                    $ref: '#/responses/Forbidden'
+                "500":
+                    $ref: '#/responses/InternalServerError'
+            summary: Get the storage volumes
             tags:
                 - storage
     /1.0/warnings:

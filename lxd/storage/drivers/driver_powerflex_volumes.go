@@ -250,10 +250,12 @@ func (d *powerflex) CreateVolumeFromCopy(vol VolumeCopy, srcVol VolumeCopy, allo
 	// Copy "lazy" with snapshots.
 	// If clone copies are enforced by the pools config or the volume has snapshots that need to be copied,
 	// fallback to simply copying the contents between source and target volumes.
-	err := genericVFSCopyVolume(d, nil, vol, srcVol, srcVolumeSnapshots, false, allowInconsistent, op)
+	cleanup, err := genericVFSCopyVolume(d, nil, vol, srcVol, srcVolumeSnapshots, false, allowInconsistent, op)
 	if err != nil {
 		return err
 	}
+
+	revert.Add(cleanup)
 
 	revert.Success()
 	return nil
@@ -279,12 +281,14 @@ func (d *powerflex) CreateVolumeFromMigration(vol VolumeCopy, conn io.ReadWriteC
 		return nil
 	}
 
-	return genericVFSCreateVolumeFromMigration(d, nil, vol, conn, volTargetArgs, preFiller, op)
+	_, err := genericVFSCreateVolumeFromMigration(d, nil, vol, conn, volTargetArgs, preFiller, op)
+	return err
 }
 
 // RefreshVolume updates an existing volume to match the state of another.
 func (d *powerflex) RefreshVolume(vol VolumeCopy, srcVol VolumeCopy, refreshSnapshots []string, allowInconsistent bool, op *operations.Operation) error {
-	return genericVFSCopyVolume(d, nil, vol, srcVol, refreshSnapshots, true, allowInconsistent, op)
+	_, err := genericVFSCopyVolume(d, nil, vol, srcVol, refreshSnapshots, true, allowInconsistent, op)
+	return err
 }
 
 // DeleteVolume deletes a volume of the storage device.
@@ -530,6 +534,15 @@ func (d *powerflex) GetVolumeUsage(vol Volume) (int64, error) {
 // SetVolumeQuota applies a size limit on volume.
 // Does nothing if supplied with an empty/zero size.
 func (d *powerflex) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bool, op *operations.Operation) error {
+	inUse := vol.MountInUse()
+
+	// Only perform pre-resize checks if we are not in "unsafe" mode.
+	// In unsafe mode we expect the caller to know what they are doing and understand the risks.
+	if !allowUnsafeResize && inUse {
+		// We don't allow online resizing of block volumes.
+		return ErrInUse
+	}
+
 	// Convert to bytes.
 	sizeBytes, err := units.ParseByteSizeString(size)
 	if err != nil {
@@ -541,18 +554,27 @@ func (d *powerflex) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bo
 		return nil
 	}
 
-	devPath, cleanup, err := d.getMappedDevPath(vol, true)
+	// Ignore the cleanup as we have to unmap the volume later anyway.
+	devPath, _, err := d.getMappedDevPath(vol, true)
 	if err != nil {
 		return err
-	}
-
-	if cleanup != nil {
-		defer func() { cleanup() }()
 	}
 
 	oldSizeBytes, err := BlockDiskSizeBytes(devPath)
 	if err != nil {
 		return fmt.Errorf("Error getting current size: %w", err)
+	}
+
+	volName, err := d.getVolumeName(vol)
+	if err != nil {
+		return err
+	}
+
+	// Ensure the volume is unmapped.
+	// Resizing the volume in PowerFlex whilst it is mapped to the system using NVMe/TCP will raise errors.
+	err = d.unmapVolume(volName)
+	if err != nil {
+		return err
 	}
 
 	// Do nothing if volume is already specified size (+/- 512 bytes).
@@ -572,13 +594,6 @@ func (d *powerflex) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bo
 		return ErrNotSupported
 	}
 
-	inUse := vol.MountInUse()
-
-	volName, err := d.getVolumeName(vol)
-	if err != nil {
-		return err
-	}
-
 	client := d.client()
 	volumeID, err := client.getVolumeID(volName)
 	if err != nil {
@@ -596,6 +611,16 @@ func (d *powerflex) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bo
 				return err
 			}
 
+			// Map the volume again to grow its filesystem.
+			devPath, cleanup, err := d.getMappedDevPath(vol, true)
+			if err != nil {
+				return err
+			}
+
+			if cleanup != nil {
+				defer cleanup()
+			}
+
 			// Grow the filesystem to fill block device.
 			err = growFileSystem(fsType, devPath, vol)
 			if err != nil {
@@ -603,17 +628,20 @@ func (d *powerflex) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bo
 			}
 		}
 	} else {
-		// Only perform pre-resize checks if we are not in "unsafe" mode.
-		// In unsafe mode we expect the caller to know what they are doing and understand the risks.
-		if !allowUnsafeResize && inUse {
-			// We don't allow online resizing of block volumes.
-			return ErrInUse
-		}
-
 		// Resize block device.
 		err = client.setVolumeSize(volumeID, sizeBytes/factorGiB)
 		if err != nil {
 			return err
+		}
+
+		// Map the volume again to allow moving the GPT alt header.
+		devPath, cleanup, err := d.getMappedDevPath(vol, true)
+		if err != nil {
+			return err
+		}
+
+		if cleanup != nil {
+			defer cleanup()
 		}
 
 		// Move the VM GPT alt header to end of disk if needed (not needed in unsafe resize mode as it is

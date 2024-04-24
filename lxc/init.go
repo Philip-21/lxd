@@ -13,6 +13,7 @@ import (
 
 	"github.com/canonical/lxd/client"
 	"github.com/canonical/lxd/lxc/config"
+	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
 	cli "github.com/canonical/lxd/shared/cmd"
 	"github.com/canonical/lxd/shared/i18n"
@@ -41,9 +42,13 @@ func (c *cmdInit) Command() *cobra.Command {
 	cmd.Short = i18n.G("Create instances from images")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(`Create instances from images`))
 	cmd.Example = cli.FormatSection("", i18n.G(`lxc init ubuntu:22.04 u1
+    Create a container (but do not start it)
 
 lxc init ubuntu:22.04 u1 < config.yaml
-    Create the instance with configuration from config.yaml`))
+    Create a container with configuration from config.yaml
+
+lxc init ubuntu:22.04 v1 --vm -c limits.cpu=4 -c limits.memory=4GiB
+    Create a virtual machine with 4 cpus and 4GiB of RAM`))
 
 	cmd.RunE = c.Run
 	cmd.Flags().StringArrayVarP(&c.flagConfig, "config", "c", nil, i18n.G("Config key/value to apply to the new instance")+"``")
@@ -282,46 +287,16 @@ func (c *cmdInit) create(conf *config.Config, args []string) (lxd.InstanceServer
 	// that would be applied server-side.
 	if needProfileExpansion {
 		// If the list of profiles is empty then LXD would apply the default profile on the server side.
-		serverSideProfiles := req.Profiles
-		if len(serverSideProfiles) == 0 {
-			serverSideProfiles = []string{"default"}
-		}
-
-		// Get the effective expanded devices by overlaying each profile's devices in order.
-		for _, profileName := range serverSideProfiles {
-			profile, _, err := d.GetProfile(profileName)
-			if err != nil {
-				return nil, "", fmt.Errorf(i18n.G("Failed loading profile %q for device override: %w"), profileName, err)
-			}
-
-			for k, v := range profile.Devices {
-				profileDevices[k] = v
-			}
+		profileDevices, err = getProfileDevices(d, req.Profiles)
+		if err != nil {
+			return nil, "", err
 		}
 	}
 
 	// Apply device overrides.
-	for deviceName := range deviceOverrides {
-		_, isLocalDevice := devicesMap[deviceName]
-		if isLocalDevice {
-			// Apply overrides to local device.
-			for k, v := range deviceOverrides[deviceName] {
-				devicesMap[deviceName][k] = v
-			}
-		} else {
-			// Check device exists in expanded profile devices.
-			profileDeviceConfig, found := profileDevices[deviceName]
-			if !found {
-				return nil, "", fmt.Errorf(i18n.G("Cannot override config for device %q: Device not found in profile devices"), deviceName)
-			}
-
-			for k, v := range deviceOverrides[deviceName] {
-				profileDeviceConfig[k] = v
-			}
-
-			// Add device to local devices.
-			devicesMap[deviceName] = profileDeviceConfig
-		}
+	devicesMap, err = shared.ApplyDeviceOverrides(devicesMap, profileDevices, deviceOverrides)
+	if err != nil {
+		return nil, "", err
 	}
 
 	req.Devices = devicesMap

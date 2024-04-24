@@ -66,11 +66,13 @@ func AllowInstanceCreation(globalConfig *clusterConfig.Config, tx *db.ClusterTx,
 	}
 
 	// Add the instance being created.
-	info.Instances = append(info.Instances, api.Instance{
-		Name:        req.Name,
-		Project:     projectName,
-		InstancePut: req.InstancePut,
-	})
+	instance := api.Instance{
+		Name:    req.Name,
+		Project: projectName,
+	}
+
+	instance.SetWritable(req.InstancePut)
+	info.Instances = append(info.Instances, instance)
 
 	// Special case restriction checks on volatile.* keys.
 	strip := false
@@ -852,6 +854,7 @@ func isContainerLowLevelOptionForbidden(key string) bool {
 	if shared.ValueInSlice(key, []string{
 		"boot.host_shutdown_timeout",
 		"linux.kernel_modules",
+		"linux.kernel_modules.load",
 		"raw.apparmor",
 		"raw.idmap",
 		"raw.lxc",
@@ -1026,10 +1029,8 @@ func AllowProjectUpdate(globalConfig *clusterConfig.Config, tx *db.ClusterTx, pr
 	for _, key := range changed {
 		if strings.HasPrefix(key, "restricted.") {
 			project := api.Project{
-				Name: projectName,
-				ProjectPut: api.ProjectPut{
-					Config: config,
-				},
+				Name:   projectName,
+				Config: config,
 			}
 
 			err := checkRestrictions(project, info.Instances, info.Profiles)
@@ -1465,22 +1466,71 @@ var aggregateLimitConfigValuePrinters = map[string]func(int64) string{
 	},
 }
 
-// FilterUsedBy filters a UsedBy list based on project access.
+// FilterUsedBy filters a UsedBy list based on the entities that the requestor is able to view.
 func FilterUsedBy(authorizer auth.Authorizer, r *http.Request, entries []string) []string {
-	// Filter the entries.
-	usedBy := []string{}
+	// Get a map of URLs by entity type. If there are multiple entries of a particular entity type we can reduce the
+	// number of calls to the authorizer.
+	urlsByEntityType := make(map[entity.Type][]*api.URL)
 	for _, entry := range entries {
 		u, err := url.Parse(entry)
 		if err != nil {
 			logger.Warn("Failed to parse project used-by entity URL", logger.Ctx{"url": entry, "error": err})
-		}
-
-		err = authorizer.CheckPermission(r.Context(), r, &api.URL{URL: *u}, auth.EntitlementCanView)
-		if err != nil {
 			continue
 		}
 
-		usedBy = append(usedBy, entry)
+		entityType, projectName, location, pathArguments, err := entity.ParseURL(*u)
+		if err != nil {
+			logger.Warn("Failed to parse project used-by entity URL", logger.Ctx{"url": entry, "error": err})
+			continue
+		}
+
+		entityURL, err := entityType.URL(projectName, location, pathArguments...)
+		if err != nil {
+			logger.Warn("Failed to create canonical entity URL for project used-by filtering", logger.Ctx{"url": entry, "error": err})
+			continue
+		}
+
+		urlsByEntityType[entityType] = append(urlsByEntityType[entityType], entityURL)
+	}
+
+	// Filter the entries.
+	usedBy := make([]string, 0, len(entries))
+
+	// Used-by lists do not include the project query parameter if it is the default project.
+	appendUsedBy := func(u *api.URL) {
+		if u.Query().Get("project") == api.ProjectDefaultName {
+			q := u.Query()
+			q.Del("project")
+			u.RawQuery = q.Encode()
+		}
+
+		usedBy = append(usedBy, u.String())
+	}
+
+	for entityType, urls := range urlsByEntityType {
+		// If only one entry of this type, check directly.
+		if len(urls) == 1 {
+			err := authorizer.CheckPermission(r.Context(), r, urls[0], auth.EntitlementCanView)
+			if err != nil {
+				continue
+			}
+
+			appendUsedBy(urls[0])
+			continue
+		}
+
+		// Otherwise get a permission checker for the entity type.
+		canViewEntity, err := authorizer.GetPermissionChecker(r.Context(), r, auth.EntitlementCanView, entityType)
+		if err != nil {
+			logger.Warn("Failed to get permission checker for project used-by filtering", logger.Ctx{"entity_type": entityType, "error": err})
+		}
+
+		// Check each url and append.
+		for _, u := range urls {
+			if canViewEntity(u) {
+				appendUsedBy(u)
+			}
+		}
 	}
 
 	return usedBy
@@ -1509,7 +1559,7 @@ func CheckClusterTargetRestriction(authorizer auth.Authorizer, r *http.Request, 
 	if projectHasRestriction(project, "restricted.cluster.target", "block") && targetFlag != "" {
 		// Allow server administrators to move instances around even when restricted (node evacuation, ...)
 		err := authorizer.CheckPermission(r.Context(), r, entity.ServerURL(), auth.EntitlementCanOverrideClusterTargetRestriction)
-		if err != nil && api.StatusErrorCheck(err, http.StatusForbidden) {
+		if err != nil && auth.IsDeniedError(err) {
 			return api.StatusErrorf(http.StatusForbidden, "This project doesn't allow cluster member targeting")
 		} else if err != nil {
 			return err

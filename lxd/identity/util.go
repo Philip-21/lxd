@@ -22,8 +22,10 @@ func IsRestrictedIdentityType(identityType string) (bool, error) {
 // identity types must correspond to an authentication method. An error is returned if the identity type is not recognised.
 func AuthenticationMethodFromIdentityType(identityType string) (string, error) {
 	switch identityType {
-	case api.IdentityTypeCertificateClientRestricted, api.IdentityTypeCertificateClientUnrestricted, api.IdentityTypeCertificateServer, api.IdentityTypeCertificateMetrics:
+	case api.IdentityTypeCertificateClientRestricted, api.IdentityTypeCertificateClientUnrestricted, api.IdentityTypeCertificateServer, api.IdentityTypeCertificateMetricsRestricted, api.IdentityTypeCertificateMetricsUnrestricted:
 		return api.AuthenticationMethodTLS, nil
+	case api.IdentityTypeOIDCClient:
+		return api.AuthenticationMethodOIDC, nil
 	}
 
 	return "", fmt.Errorf("Identity type %q not recognized", identityType)

@@ -427,6 +427,7 @@ func imgPostRemoteInfo(s *state.State, r *http.Request, req api.ImagesPost, op *
 		ProjectName:       project,
 		Budget:            budget,
 		SourceProjectName: req.Source.Project,
+		UserRequested:     true,
 	})
 	if err != nil {
 		return nil, err
@@ -529,13 +530,14 @@ func imgPostURLInfo(s *state.State, r *http.Request, req api.ImagesPost, op *ope
 
 	// Import the image
 	info, err := ImageDownload(r, s, op, &ImageDownloadArgs{
-		Server:      url,
-		Protocol:    "direct",
-		Alias:       hash,
-		AutoUpdate:  req.AutoUpdate,
-		Public:      req.Public,
-		ProjectName: project,
-		Budget:      budget,
+		Server:        url,
+		Protocol:      "direct",
+		Alias:         hash,
+		AutoUpdate:    req.AutoUpdate,
+		Public:        req.Public,
+		ProjectName:   project,
+		Budget:        budget,
+		UserRequested: true,
 	})
 	if err != nil {
 		return nil, err
@@ -973,20 +975,19 @@ func imagesPost(d *Daemon, r *http.Request) response.Response {
 
 	var userCanCreateImages bool
 	err := s.Authorizer.CheckPermission(r.Context(), r, entity.ProjectURL(projectName), auth.EntitlementCanCreateImages)
-	if err == nil {
-		userCanCreateImages = true
-	} else if !api.StatusErrorCheck(err, http.StatusForbidden) {
+	if err != nil && !auth.IsDeniedError(err) {
 		return response.SmartError(err)
+	} else if err == nil {
+		userCanCreateImages = true
 	}
-
-	trusted := d.checkTrustedClient(r) == nil && userCanCreateImages
 
 	secret := r.Header.Get("X-LXD-secret")
 	fingerprint := r.Header.Get("X-LXD-fingerprint")
 
 	var imageMetadata map[string]any
 
-	if !trusted && (secret == "" || fingerprint == "") {
+	// If user does not have permission to create images. They must provide a secret and a fingerprint.
+	if !userCanCreateImages && (secret == "" || fingerprint == "") {
 		return response.Forbidden(nil)
 	}
 
@@ -998,7 +999,7 @@ func imagesPost(d *Daemon, r *http.Request) response.Response {
 
 	if op != nil {
 		imageMetadata = op.Metadata
-	} else if !trusted {
+	} else if !userCanCreateImages {
 		return response.Forbidden(nil)
 	}
 
@@ -1201,15 +1202,9 @@ func imagesPost(d *Daemon, r *http.Request) response.Response {
 		}
 
 		// Sync the images between each node in the cluster on demand
-		err = imageSyncBetweenNodes(s, r, projectName, info.Fingerprint)
+		err = imageSyncBetweenNodes(s.ShutdownCtx, s, r, projectName, info.Fingerprint)
 		if err != nil {
 			return fmt.Errorf("Failed syncing image between nodes: %w", err)
-		}
-
-		// Add the image to the authorizer.
-		err = s.Authorizer.AddImage(r.Context(), projectName, info.Fingerprint)
-		if err != nil {
-			logger.Error("Failed to add image to authorizer", logger.Ctx{"fingerprint": info.Fingerprint, "project": projectName, "error": err})
 		}
 
 		s.Events.SendLifecycle(projectName, lifecycle.ImageCreated.Event(info.Fingerprint, projectName, op.Requestor(), logger.Ctx{"type": info.Type}))
@@ -1635,12 +1630,19 @@ func imagesGet(d *Daemon, r *http.Request) response.Response {
 	}
 
 	request.SetCtxValue(r, request.CtxEffectiveProjectName, effectiveProjectName)
-	hasPermission, authorizationErr := s.Authorizer.GetPermissionChecker(r.Context(), r, auth.EntitlementCanView, entity.TypeImage)
-	if authorizationErr != nil && !api.StatusErrorCheck(authorizationErr, http.StatusForbidden) {
-		return response.SmartError(authorizationErr)
+
+	// Check if the caller is authenticated via the request context.
+	trusted, err := request.GetCtxValue[bool](r.Context(), request.CtxTrusted)
+	if err != nil {
+		return response.InternalError(fmt.Errorf("Failed getting authentication status: %w", err))
 	}
 
-	public := d.checkTrustedClient(r) != nil || authorizationErr != nil
+	// Get a permission checker. If the caller is not authenticated, the permission checker will deny all.
+	// However, the permission checker will not be called for public images.
+	canViewImage, err := s.Authorizer.GetPermissionChecker(r.Context(), r, auth.EntitlementCanView, entity.TypeImage)
+	if err != nil {
+		return response.SmartError(err)
+	}
 
 	clauses, err := filter.Parse(filterStr, filter.QueryOperatorSet())
 	if err != nil {
@@ -1649,7 +1651,7 @@ func imagesGet(d *Daemon, r *http.Request) response.Response {
 
 	var result any
 	err = s.DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-		result, err = doImagesGet(ctx, tx, util.IsRecursionRequest(r), projectName, public, clauses, hasPermission)
+		result, err = doImagesGet(ctx, tx, util.IsRecursionRequest(r), projectName, !trusted, clauses, canViewImage)
 		if err != nil {
 			return err
 		}
@@ -2803,12 +2805,6 @@ func imageDelete(d *Daemon, r *http.Request) response.Response {
 		// Remove main image file from disk.
 		imageDeleteFromDisk(imgInfo.Fingerprint)
 
-		// Remove image from authorizer.
-		err = s.Authorizer.DeleteImage(r.Context(), projectName, imgInfo.Fingerprint)
-		if err != nil {
-			logger.Error("Failed to remove image from authorizer", logger.Ctx{"fingerprint": imgInfo.Fingerprint, "project": projectName, "error": err})
-		}
-
 		s.Events.SendLifecycle(projectName, lifecycle.ImageDeleted.Event(imgInfo.Fingerprint, projectName, op.Requestor(), nil))
 
 		return nil
@@ -3013,13 +3009,12 @@ func imageGet(d *Daemon, r *http.Request) response.Response {
 
 	var userCanViewImage bool
 	err = s.Authorizer.CheckPermission(r.Context(), r, entity.ImageURL(projectName, info.Fingerprint), auth.EntitlementCanView)
-	if err == nil {
-		userCanViewImage = true
-	} else if !api.StatusErrorCheck(err, http.StatusForbidden) {
+	if err != nil && !auth.IsDeniedError(err) {
 		return response.SmartError(err)
+	} else if err == nil {
+		userCanViewImage = true
 	}
 
-	public := d.checkTrustedClient(r) != nil || !userCanViewImage
 	secret := r.FormValue("secret")
 
 	op, err := imageValidSecret(s, r, projectName, info.Fingerprint, secret)
@@ -3027,8 +3022,9 @@ func imageGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	if !info.Public && public && op == nil {
-		return response.NotFound(fmt.Errorf("Image %q not found", info.Fingerprint))
+	// If the caller does not have permission to view the image and the secret was invalid, return generic not found.
+	if !info.Public && !userCanViewImage && op == nil {
+		return response.NotFound(nil)
 	}
 
 	etag := []any{info.Public, info.AutoUpdate, info.Properties}
@@ -3338,12 +3334,6 @@ func imageAliasesPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	// Add the image alias to the authorizer.
-	err = s.Authorizer.AddImageAlias(r.Context(), projectName, req.Name)
-	if err != nil {
-		logger.Error("Failed to add image alias to authorizer", logger.Ctx{"name": req.Name, "project": projectName, "error": err})
-	}
-
 	requestor := request.CreateRequestor(r)
 	lc := lifecycle.ImageAliasCreated.Event(req.Name, projectName, requestor, logger.Ctx{"target": req.Target})
 	s.Events.SendLifecycle(projectName, lc)
@@ -3609,17 +3599,15 @@ func imageAliasGet(d *Daemon, r *http.Request) response.Response {
 
 	var userCanViewImageAlias bool
 	err = s.Authorizer.CheckPermission(r.Context(), r, entity.ImageAliasURL(projectName, name), auth.EntitlementCanView)
-	if err == nil {
-		userCanViewImageAlias = true
-	} else if !api.StatusErrorCheck(err, http.StatusForbidden) {
+	if err != nil && !auth.IsDeniedError(err) {
 		return response.SmartError(err)
+	} else if err == nil {
+		userCanViewImageAlias = true
 	}
-
-	public := d.checkTrustedClient(r) != nil || !userCanViewImageAlias
 
 	var alias api.ImageAliasesEntry
 	err = d.State().DB.Cluster.Transaction(r.Context(), func(ctx context.Context, tx *db.ClusterTx) error {
-		_, alias, err = tx.GetImageAlias(ctx, projectName, name, !public)
+		_, alias, err = tx.GetImageAlias(ctx, projectName, name, userCanViewImageAlias)
 
 		return err
 	})
@@ -3678,12 +3666,6 @@ func imageAliasDelete(d *Daemon, r *http.Request) response.Response {
 	})
 	if err != nil {
 		return response.SmartError(err)
-	}
-
-	// Remove image alias from authorizer.
-	err = s.Authorizer.DeleteImageAlias(r.Context(), projectName, name)
-	if err != nil {
-		logger.Error("Failed to remove image alias from authorizer", logger.Ctx{"name": name, "project": projectName, "error": err})
 	}
 
 	requestor := request.CreateRequestor(r)
@@ -3851,7 +3833,7 @@ func imageAliasPatch(d *Daemon, r *http.Request) response.Response {
 		if ok {
 			target, err := req.GetString("target")
 			if err != nil {
-				return api.StatusErrorf(http.StatusBadRequest, "%v", err)
+				return api.StatusErrorf(http.StatusBadRequest, "%w", err)
 			}
 
 			imgAlias.Target = target
@@ -3861,7 +3843,7 @@ func imageAliasPatch(d *Daemon, r *http.Request) response.Response {
 		if ok {
 			description, err := req.GetString("description")
 			if err != nil {
-				return api.StatusErrorf(http.StatusBadRequest, "%v", err)
+				return api.StatusErrorf(http.StatusBadRequest, "%w", err)
 			}
 
 			imgAlias.Description = description
@@ -3958,12 +3940,6 @@ func imageAliasPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	// Rename image alias in authorizer.
-	err = s.Authorizer.RenameImageAlias(r.Context(), projectName, name, req.Name)
-	if err != nil {
-		logger.Error("Failed to rename image alias in authorizer", logger.Ctx{"old_name": name, "new_name": req.Name, "project": projectName})
-	}
-
 	requestor := request.CreateRequestor(r)
 	lc := lifecycle.ImageAliasRenamed.Event(req.Name, projectName, requestor, logger.Ctx{"old_name": name})
 	s.Events.SendLifecycle(projectName, lc)
@@ -4049,13 +4025,12 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 	// Access control.
 	var userCanViewImage bool
 	err = s.Authorizer.CheckPermission(r.Context(), r, entity.ImageURL(projectName, imgInfo.Fingerprint), auth.EntitlementCanView)
-	if err == nil {
-		userCanViewImage = true
-	} else if !api.StatusErrorCheck(err, http.StatusForbidden) {
+	if err != nil && !auth.IsDeniedError(err) {
 		return response.SmartError(err)
+	} else if err == nil {
+		userCanViewImage = true
 	}
 
-	public := d.checkTrustedClient(r) != nil || !userCanViewImage
 	secret := r.FormValue("secret")
 
 	if r.RemoteAddr == "@devlxd" {
@@ -4068,8 +4043,9 @@ func imageExport(d *Daemon, r *http.Request) response.Response {
 			return response.SmartError(err)
 		}
 
-		if !imgInfo.Public && public && op == nil {
-			return response.NotFound(fmt.Errorf("Image %q not found", imgInfo.Fingerprint))
+		// If the image is not public and the caller cannot view it, return a generic not found error.
+		if !imgInfo.Public && !userCanViewImage && op == nil {
+			return response.NotFound(nil)
 		}
 	}
 
@@ -4567,7 +4543,7 @@ func autoSyncImagesTask(d *Daemon) (task.Func, task.Schedule) {
 func autoSyncImages(ctx context.Context, s *state.State) error {
 	var imageProjectInfo map[string][]string
 
-	err := s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err := s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
 		var err error
 
 		// Get all images.
@@ -4581,14 +4557,14 @@ func autoSyncImages(ctx context.Context, s *state.State) error {
 
 	for fingerprint, projects := range imageProjectInfo {
 		ch := make(chan error)
-		go func(fingerprint string, project string) {
-			err := imageSyncBetweenNodes(s, nil, project, fingerprint)
+		go func(projectName string, fingerprint string) {
+			err := imageSyncBetweenNodes(ctx, s, nil, projectName, fingerprint)
 			if err != nil {
-				logger.Error("Failed to synchronize images", logger.Ctx{"err": err, "fingerprint": fingerprint})
+				logger.Error("Failed to synchronize images", logger.Ctx{"err": err, "project": projectName, "fingerprint": fingerprint})
 			}
 
 			ch <- nil
-		}(fingerprint, projects[0])
+		}(projects[0], fingerprint)
 
 		select {
 		case <-ctx.Done():
@@ -4600,14 +4576,14 @@ func autoSyncImages(ctx context.Context, s *state.State) error {
 	return nil
 }
 
-func imageSyncBetweenNodes(s *state.State, r *http.Request, project string, fingerprint string) error {
+func imageSyncBetweenNodes(ctx context.Context, s *state.State, r *http.Request, project string, fingerprint string) error {
 	logger.Info("Syncing image to members started", logger.Ctx{"fingerprint": fingerprint, "project": project})
 	defer logger.Info("Syncing image to members finished", logger.Ctx{"fingerprint": fingerprint, "project": project})
 
 	var desiredSyncNodeCount int64
 	var syncNodeAddresses []string
 
-	err := s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err := s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
 		desiredSyncNodeCount = s.GlobalConfig.ImagesMinimalReplica()
 
 		// -1 means that we want to replicate the image on all nodes
@@ -4658,7 +4634,7 @@ func imageSyncBetweenNodes(s *state.State, r *http.Request, project string, fing
 
 	var image *api.Image
 
-	err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+	err = s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
 		// Get the image.
 		_, image, err = tx.GetImage(ctx, fingerprint, dbCluster.ImageFilter{Project: &project})
 
@@ -4678,7 +4654,7 @@ func imageSyncBetweenNodes(s *state.State, r *http.Request, project string, fing
 	for i := 0; i < int(nodeCount); i++ {
 		var addresses []string
 
-		err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
+		err = s.DB.Cluster.Transaction(ctx, func(ctx context.Context, tx *db.ClusterTx) error {
 			// Get a list of nodes that do not have the image.
 			addresses, err = tx.GetNodesWithoutImage(ctx, fingerprint)
 

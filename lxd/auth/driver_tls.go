@@ -1,3 +1,5 @@
+//go:build linux && cgo && !agent
+
 package auth
 
 import (
@@ -13,6 +15,15 @@ import (
 	"github.com/canonical/lxd/shared/entity"
 	"github.com/canonical/lxd/shared/logger"
 )
+
+const (
+	// DriverTLS is used at start up to allow communication between cluster members and initialise the cluster database.
+	DriverTLS string = "tls"
+)
+
+func init() {
+	authorizers[DriverTLS] = func() authorizer { return &tls{} }
+}
 
 type tls struct {
 	commonAuthorizer
@@ -32,7 +43,12 @@ func (t *tls) load(ctx context.Context, identityCache *identity.Cache, opts Opts
 func (t *tls) CheckPermission(ctx context.Context, r *http.Request, entityURL *api.URL, entitlement Entitlement) error {
 	details, err := t.requestDetails(r)
 	if err != nil {
-		return api.StatusErrorf(http.StatusForbidden, "Failed to extract request details: %v", err)
+		return fmt.Errorf("Failed to extract request details: %w", err)
+	}
+
+	// Untrusted requests are denied.
+	if !details.trusted {
+		return api.StatusErrorf(http.StatusForbidden, http.StatusText(http.StatusForbidden))
 	}
 
 	if details.isInternalOrUnix() || details.isPKI {
@@ -60,7 +76,7 @@ func (t *tls) CheckPermission(ctx context.Context, r *http.Request, entityURL *a
 
 	if !isRestricted {
 		return nil
-	} else if id.IdentityType == api.IdentityTypeCertificateMetrics && entitlement == EntitlementCanViewMetrics {
+	} else if id.IdentityType == api.IdentityTypeCertificateMetricsUnrestricted && entitlement == EntitlementCanViewMetrics {
 		return nil
 	}
 
@@ -94,6 +110,11 @@ func (t *tls) CheckPermission(ctx context.Context, r *http.Request, entityURL *a
 		return api.StatusErrorf(http.StatusForbidden, "Certificate is restricted")
 	}
 
+	// Don't allow project modifications.
+	if entityType == entity.TypeProject && (entitlement == EntitlementCanEdit || entitlement == EntitlementCanDelete) {
+		return api.StatusErrorf(http.StatusForbidden, "Certificate is restricted")
+	}
+
 	// Check project level permissions against the certificates project list.
 	if !shared.ValueInSlice(projectName, id.Projects) {
 		return api.StatusErrorf(http.StatusForbidden, "User does not have permission for project %q", projectName)
@@ -112,7 +133,12 @@ func (t *tls) GetPermissionChecker(ctx context.Context, r *http.Request, entitle
 
 	details, err := t.requestDetails(r)
 	if err != nil {
-		return nil, api.StatusErrorf(http.StatusForbidden, "Failed to extract request details: %v", err)
+		return nil, fmt.Errorf("Failed to extract request details: %w", err)
+	}
+
+	// Untrusted requests are denied.
+	if !details.trusted {
+		return allowFunc(false), nil
 	}
 
 	if details.isInternalOrUnix() || details.isPKI {
@@ -140,7 +166,7 @@ func (t *tls) GetPermissionChecker(ctx context.Context, r *http.Request, entitle
 
 	if !isRestricted {
 		return allowFunc(true), nil
-	} else if id.IdentityType == api.IdentityTypeCertificateMetrics && entitlement == EntitlementCanViewMetrics {
+	} else if id.IdentityType == api.IdentityTypeCertificateMetricsUnrestricted && entitlement == EntitlementCanViewMetrics {
 		return allowFunc(true), nil
 	}
 
@@ -152,6 +178,9 @@ func (t *tls) GetPermissionChecker(ctx context.Context, r *http.Request, entitle
 	// Check server level object types
 	switch entityType {
 	case entity.TypeServer:
+		// We have to keep EntitlementCanViewMetrics here for backwards compatibility with older versions of LXD.
+		// Historically when viewing the metrics endpoint for a specific project with a restricted certificate
+		// also the internal server metrics get returned.
 		if entitlement == EntitlementCanView || entitlement == EntitlementCanViewResources || entitlement == EntitlementCanViewMetrics {
 			return allowFunc(true), nil
 		}

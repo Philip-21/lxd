@@ -4,10 +4,10 @@
 ```{youtube} https://www.youtube.com/watch?v=F9GALjHtnUU
 ```
 
-LXD provides a tool (`lxc-to-lxd`) that you can use to import LXC containers into your LXD server.
+If you are using LXC and want to migrate all or some of your LXC containers to a LXD installation on the same machine, you can use the `lxc-to-lxd` tool.
 The LXC containers must exist on the same machine as the LXD server.
 
-The tool analyzes the LXC containers and migrates both their data and their configuration into new LXD containers.
+The tool analyzes the LXC configuration and copies the data and configuration of your existing LXC containers into new LXD containers.
 
 ```{note}
 Alternatively, you can use the `lxd-migrate` tool within a LXC container to migrate it to LXD (see {ref}`import-machines-to-instances`).
@@ -18,6 +18,17 @@ However, this tool does not migrate any of the LXC container configuration.
 
 If you're using the snap, the `lxc-to-lxd` is automatically installed.
 It is available as `lxd.lxc-to-lxd`.
+
+```{note}
+The `lxd.lxc-to-lxd` command was last included in the 5.0 snap which should be installed to do the conversion from `lxc` to `lxd`:
+
+        sudo install lxd --channel=5.0/stable
+        sudo lxd.lxc-to-lxd --all
+
+After successfully running the `lxd.lxc-to-lxd` command, you can then switch to a newer snap channel if desired, like the latest one:
+
+        sudo refresh lxd --channel=latest/stable
+```
 
 Otherwise, make sure that you have `go` ({ref}`requirements-go`) installed and get the tool with the following command:
 

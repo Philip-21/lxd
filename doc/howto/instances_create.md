@@ -27,7 +27,7 @@ See [`lxc launch --help`](lxc_launch.md) or [`lxc init --help`](lxc_init.md) for
 The most common flags are:
 
 - `--config` to specify a configuration option for the new instance
-- `--device` to override {ref}`device options <devices>` for a device provided through a profile, or to specify an {ref}`initial configuration for the root disk device <devices-disk-initial-config>`
+- `--device` to override {ref}`device options <devices>` for a device provided through a profile, or to specify an {ref}`initial configuration for the root disk device <devices-disk-initial-config>` (syntax: `--device <device_name>,<device_option>=<value>`)
 - `--profile` to specify a {ref}`profile <profiles>` to use for the new instance
 - `--network` or `--storage` to make the new instance use a specific network or storage pool
 - `--target` to create the instance on a specific cluster member
@@ -237,11 +237,7 @@ To create a container with this instance type, enter the following command:
 ```
 ````
 
-The list of supported clouds and instance types can be found here:
-
-- [Amazon Web Services](https://raw.githubusercontent.com/canonical/lxd/main/meta/instance-types/aws.yaml)
-- [Google Compute Engine](https://raw.githubusercontent.com/canonical/lxd/main/meta/instance-types/gce.yaml)
-- [Microsoft Azure](https://raw.githubusercontent.com/canonical/lxd/main/meta/instance-types/azure.yaml)
+The list of supported clouds and instance types can be found at [`images.lxd.canonical.com/meta/instance-types/`](https://images.lxd.canonical.com/meta/instance-types/).
 
 ### Create a VM that boots from an ISO
 
@@ -302,7 +298,7 @@ Lastly, attach the custom ISO volume to the VM using the following command:
 ```
 ````
 
-The `boot.priority` configuration key ensures that the VM will boot from the ISO first.
+The {config:option}`device-disk-device-conf:boot.priority` configuration key ensures that the VM will boot from the ISO first.
 Start the VM and {ref}`connect to the console <instances-console>` as there might be a menu you need to interact with:
 
 ````{tabs}

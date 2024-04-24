@@ -22,7 +22,20 @@ For virtual machines, TPM can be used both for sealing certificates and for vali
 
 `tpm` devices have the following device options:
 
-Key                 | Type      | Default   | Required       | Description
-:--                 | :--       | :--       | :--            | :--
-`path`              | string    | -         | for containers | Only for containers: path inside the instance (for example, `/dev/tpm0`)
-`pathrm`            | string    | -         | for containers | Only for containers: resource manager path inside the instance (for example, `/dev/tpmrm0`)
+% Include content from [../config_options.txt](../config_options.txt)
+```{include} ../config_options.txt
+    :start-after: <!-- config group device-tpm-device-conf start -->
+    :end-before: <!-- config group device-tpm-device-conf end -->
+```
+
+## Configuration examples
+
+Add a `tpm` device to a container by specifying its path and the resource manager path:
+
+    lxc config device add <instance_name> <device_name> tpm path=<path_on_instance> pathrm=<resource_manager_path>
+
+Add a `tpm` device to a virtual machine:
+
+    lxc config device add <instance_name> <device_name> tpm
+
+See {ref}`instances-configure-devices` for more information.

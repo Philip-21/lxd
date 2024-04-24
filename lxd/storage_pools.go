@@ -340,7 +340,7 @@ func storagePoolsPost(d *Daemon, r *http.Request) response.Response {
 			return tx.CreatePendingStoragePool(ctx, targetNode, req.Name, req.Driver, req.Config)
 		})
 		if err != nil {
-			if err == db.ErrAlreadyDefined {
+			if api.StatusErrorCheck(err, http.StatusConflict) {
 				return response.BadRequest(fmt.Errorf("The storage pool already defined on member %q", targetNode))
 			}
 
@@ -383,12 +383,6 @@ func storagePoolsPost(d *Daemon, r *http.Request) response.Response {
 		if err != nil {
 			return response.SmartError(err)
 		}
-	}
-
-	// Add the storage pool to the authorizer.
-	err = s.Authorizer.AddStoragePool(r.Context(), req.Name)
-	if err != nil {
-		logger.Error("Failed to add storage pool to authorizer", logger.Ctx{"name": pool.Name, "error": err})
 	}
 
 	s.Events.SendLifecycle(api.ProjectDefaultName, lc)
@@ -638,11 +632,11 @@ func storagePoolGet(d *Daemon, r *http.Request) response.Response {
 	poolAPI.UsedBy = project.FilterUsedBy(s.Authorizer, r, poolUsedBy)
 
 	err = s.Authorizer.CheckPermission(r.Context(), r, entity.StoragePoolURL(poolName), auth.EntitlementCanEdit)
-	if err != nil && api.StatusErrorCheck(err, http.StatusForbidden) {
-		// Don't allow non-admins to see pool config as sensitive info can be stored there.
-		poolAPI.Config = nil
-	} else if err != nil {
+	if err != nil && !auth.IsDeniedError(err) {
 		return response.SmartError(err)
+	} else if err != nil {
+		// Only allow users that can edit storage pool config to view it as sensitive info can be stored there.
+		poolAPI.Config = nil
 	}
 
 	// If no member is specified and the daemon is clustered, we omit the node-specific fields.
@@ -1024,12 +1018,6 @@ func storagePoolDelete(d *Daemon, r *http.Request) response.Response {
 	err = dbStoragePoolDeleteAndUpdateCache(s, pool.Name())
 	if err != nil {
 		return response.SmartError(err)
-	}
-
-	// Remove the storage pool from the authorizer.
-	err = s.Authorizer.DeleteStoragePool(r.Context(), pool.Name())
-	if err != nil {
-		logger.Error("Failed to remove storage pool from authorizer", logger.Ctx{"name": pool.Name(), "error": err})
 	}
 
 	requestor := request.CreateRequestor(r)

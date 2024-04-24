@@ -327,12 +327,6 @@ func lxcCreate(s *state.State, args db.InstanceArgs, p api.Project) (instance.In
 	if d.isSnapshot {
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceSnapshotCreated.Event(d, nil))
 	} else {
-		// Add instance to authorizer.
-		err = d.state.Authorizer.AddInstance(d.state.ShutdownCtx, d.project.Name, d.Name())
-		if err != nil {
-			logger.Error("Failed to add instance to authorizer", logger.Ctx{"instanceName": d.Name(), "projectName": d.project.Name, "error": err})
-		}
-
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceCreated.Event(d, map[string]any{
 			"type":         api.InstanceTypeContainer,
 			"storage-pool": d.storagePool.Name(),
@@ -1173,10 +1167,12 @@ func (d *lxc) initLXC(config bool) (*liblxc.Container, error) {
 					}
 				}
 
-				// Set soft limit to value 10% less than hard limit
-				err = cg.SetMemorySoftLimit(int64(float64(valueInt) * 0.9))
-				if err != nil {
-					return nil, err
+				if d.state.OS.CGInfo.Layout != cgroup.CgroupsUnified {
+					// Set soft limit to value 10% less than hard limit
+					err = cg.SetMemorySoftLimit(int64(float64(valueInt) * 0.9))
+					if err != nil {
+						return nil, err
+					}
 				}
 			}
 		}
@@ -1938,7 +1934,8 @@ func (d *lxc) startCommon() (string, []func() error, error) {
 
 	// Load any required kernel modules
 	kernelModules := d.expandedConfig["linux.kernel_modules"]
-	if kernelModules != "" {
+	kernelModulesLoadPolicy := d.expandedConfig["linux.kernel_modules.load"]
+	if kernelModulesLoadPolicy != "ondemand" && kernelModules != "" {
 		for _, module := range strings.Split(kernelModules, ",") {
 			module = strings.TrimPrefix(module, " ")
 			err := util.LoadModule(module)
@@ -2568,6 +2565,21 @@ func (d *lxc) onStart(_ map[string]string) error {
 	err = d.recordLastState()
 	if err != nil {
 		return err
+	}
+
+	return nil
+}
+
+// validateStartup checks any constraints that would prevent start up from succeeding under normal circumstances.
+func (d *lxc) validateStartup(stateful bool, statusCode api.StatusCode) error {
+	err := d.common.validateStartup(stateful, statusCode)
+	if err != nil {
+		return err
+	}
+
+	// Ensure nesting is turned on for images that require nesting.
+	if shared.IsTrue(d.localConfig["image.requirements.nesting"]) && shared.IsFalseOrEmpty(d.expandedConfig["security.nesting"]) {
+		return fmt.Errorf("The image used by this instance requires nesting. Please set security.nesting=true on the instance")
 	}
 
 	return nil
@@ -3803,11 +3815,6 @@ func (d *lxc) delete(force bool) error {
 	if d.isSnapshot {
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceSnapshotDeleted.Event(d, nil))
 	} else {
-		err = d.state.Authorizer.DeleteInstance(d.state.ShutdownCtx, d.project.Name, d.Name())
-		if err != nil {
-			logger.Error("Failed to remove instance from authorizer", logger.Ctx{"name": d.Name(), "project": d.project.Name, "error": err})
-		}
-
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceDeleted.Event(d, nil))
 	}
 
@@ -3993,11 +4000,6 @@ func (d *lxc) Rename(newName string, applyTemplateTrigger bool) error {
 	if d.isSnapshot {
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceSnapshotRenamed.Event(d, map[string]any{"old_name": oldName}))
 	} else {
-		err = d.state.Authorizer.RenameInstance(d.state.ShutdownCtx, d.project.Name, oldName, newName)
-		if err != nil {
-			logger.Error("Failed to rename instance in authorizer", logger.Ctx{"old_name": oldName, "new_name": newName, "project": d.project.Name, "error": err})
-		}
-
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceRenamed.Event(d, map[string]any{"old_name": oldName}))
 	}
 
@@ -4183,7 +4185,6 @@ func (d *lxc) Update(args db.InstanceArgs, userRequested bool) error {
 			d.release()
 			d.cConfig = false
 			_, _ = d.initLXC(true)
-			cgroup.TaskSchedulerTrigger("container", d.name, "changed")
 		}
 	}()
 
@@ -4409,6 +4410,8 @@ func (d *lxc) Update(args db.InstanceArgs, userRequested bool) error {
 		}
 	}
 
+	cpuLimitWasChanged := false
+
 	// Apply the live changes
 	if isRunning {
 		cc, err := d.initLXC(false)
@@ -4464,6 +4467,10 @@ func (d *lxc) Update(args db.InstanceArgs, userRequested bool) error {
 					}
 				}
 			} else if key == "linux.kernel_modules" && value != "" {
+				if d.expandedConfig["linux.kernel_modules.load"] == "ondemand" {
+					continue
+				}
+
 				for _, module := range strings.Split(value, ",") {
 					module = strings.TrimPrefix(module, " ")
 					err := util.LoadModule(module)
@@ -4619,11 +4626,13 @@ func (d *lxc) Update(args db.InstanceArgs, userRequested bool) error {
 						}
 					}
 
-					// Set soft limit to value 10% less than hard limit
-					err = cg.SetMemorySoftLimit(int64(float64(memoryInt) * 0.9))
-					if err != nil {
-						revertMemory()
-						return err
+					if d.state.OS.CGInfo.Layout != cgroup.CgroupsUnified {
+						// Set soft limit to value 10% less than hard limit
+						err = cg.SetMemorySoftLimit(int64(float64(memoryInt) * 0.9))
+						if err != nil {
+							revertMemory()
+							return err
+						}
 					}
 				}
 
@@ -4657,8 +4666,7 @@ func (d *lxc) Update(args db.InstanceArgs, userRequested bool) error {
 					}
 				}
 			} else if key == "limits.cpu" || key == "limits.cpu.nodes" {
-				// Trigger a scheduler re-run
-				cgroup.TaskSchedulerTrigger("container", d.name, "changed")
+				cpuLimitWasChanged = true
 			} else if key == "limits.cpu.priority" || key == "limits.cpu.allowance" {
 				// Skip if no cpu CGroup
 				if !d.state.OS.CGInfo.Supports(cgroup.CPU, cg) {
@@ -4859,6 +4867,11 @@ func (d *lxc) Update(args db.InstanceArgs, userRequested bool) error {
 
 	// Success, update the closure to mark that the changes should be kept.
 	undoChanges = false
+
+	if cpuLimitWasChanged {
+		// Trigger a scheduler re-run
+		cgroup.TaskSchedulerTrigger("container", d.name, "changed")
+	}
 
 	if userRequested {
 		if d.isSnapshot {
@@ -5353,7 +5366,7 @@ func (d *lxc) MigrateSend(args instance.MigrateSendArgs) error {
 	// is running, and if we are doing a non-optimized transfer (i.e using rsync or raw block transfer) then we
 	// should do a two stage transfer to minimize downtime.
 	instanceRunning := args.Live || (respHeader.Criu != nil && *respHeader.Criu == migration.CRIUType_NONE)
-	nonOptimizedMigration := volSourceArgs.MigrationType.FSType == migration.MigrationFSType_RSYNC || volSourceArgs.MigrationType.FSType == migration.MigrationFSType_BLOCK_AND_RSYNC
+	nonOptimizedMigration := volSourceArgs.MigrationType.FSType == migration.MigrationFSType_RSYNC || shared.ValueInSlice(volSourceArgs.MigrationType.FSType, []migration.MigrationFSType{migration.MigrationFSType_BLOCK_AND_RSYNC, migration.MigrationFSType_RBD_AND_RSYNC})
 	if instanceRunning && nonOptimizedMigration {
 		// Indicate this info to the storage driver so that it can alter its behaviour if needed.
 		volSourceArgs.MultiSync = true
@@ -5426,11 +5439,6 @@ func (d *lxc) MigrateSend(args instance.MigrateSendArgs) error {
 			// Setup rsync options (used for CRIU state transfers).
 			rsyncBwlimit := pool.Driver().Config()["rsync.bwlimit"]
 			rsyncFeatures := respHeader.GetRsyncFeaturesSlice()
-			if !shared.ValueInSlice("bidirectional", rsyncFeatures) {
-				// If no bi-directional support, assume LXD 3.7 level.
-				// NOTE: Do NOT extend this list of arguments.
-				rsyncFeatures = []string{"xattrs", "delete", "compress"}
-			}
 
 			if respHeader.Criu == nil {
 				return fmt.Errorf("Got no CRIU socket type for live migration")
@@ -6052,11 +6060,9 @@ func (d *lxc) MigrateReceive(args instance.MigrateReceiveArgs) error {
 
 			architectureName, _ := osarch.ArchitectureName(d.Architecture())
 			apiInstSnap := &api.InstanceSnapshot{
-				InstanceSnapshotPut: api.InstanceSnapshotPut{
-					ExpiresAt: time.Time{},
-				},
 				Architecture: architectureName,
 				CreatedAt:    d.CreationDate(),
+				ExpiresAt:    time.Time{},
 				LastUsedAt:   d.LastUsedDate(),
 				Config:       d.LocalConfig(),
 				Devices:      d.LocalDevices().CloneNative(),
@@ -6595,8 +6601,20 @@ func (d *lxc) templateApplyNow(trigger instance.TemplateTrigger) error {
 
 	// Generate the container metadata
 	containerMeta := make(map[string]string)
+	// lxdmeta:generate(entities=instance-property; group=instance-conf; key=name)
+	// See {ref}`instance-name-requirements`.
+	// ---
+	//  type: string
+	//  readonly: yes
+	//  shortdesc: Instance name
 	containerMeta["name"] = d.name
 	containerMeta["type"] = "container"
+	// lxdmeta:generate(entities=instance-property; group=instance-conf; key=architecture)
+	//
+	// ---
+	//  type: string
+	//  readonly: no
+	//  shortdesc: Instance architecture
 	containerMeta["architecture"] = arch
 
 	if d.ephemeral {
@@ -8180,6 +8198,29 @@ func (d *lxc) CGroup() (*cgroup.CGroup, error) {
 	return d.cgroup(cc, true)
 }
 
+// SetAffinity sets affinity in the container according with a set provided.
+func (d *lxc) SetAffinity(set []string) error {
+	sort.Strings(set)
+	affinitySet := strings.Join(set, ",")
+
+	// Confirm the container didn't just stop
+	if d.InitPID() <= 0 {
+		return nil
+	}
+
+	cg, err := d.CGroup()
+	if err != nil {
+		return fmt.Errorf("Unable to get cgroup struct: %w", err)
+	}
+
+	err = cg.SetCpuset(affinitySet)
+	if err != nil {
+		return fmt.Errorf("Unable to set cgroup cpuset to %q: %w", affinitySet, err)
+	}
+
+	return nil
+}
+
 func (d *lxc) cgroup(cc *liblxc.Container, running bool) (*cgroup.CGroup, error) {
 	if cc == nil {
 		return nil, fmt.Errorf("Container not initialized for cgroup")
@@ -8253,14 +8294,11 @@ func (d *lxc) Info() instance.Info {
 
 // Metrics returns the metric set for the LXC driver. It collects various metrics related to memory, CPU, disk, filesystem, and network usage.
 func (d *lxc) Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error) {
-	state := instance.PowerStateStopped
-	isRunning := d.IsRunning()
-
-	if isRunning {
-		state = instance.PowerStateRunning
+	if !d.IsRunning() {
+		return nil, ErrInstanceIsStopped
 	}
 
-	out := metrics.NewMetricSet(map[string]string{"project": d.project.Name, "name": d.name, "type": instancetype.Container.String(), "state": state})
+	out := metrics.NewMetricSet(map[string]string{"project": d.project.Name, "name": d.name, "type": instancetype.Container.String()})
 
 	cc, err := d.initLXC(false)
 	if err != nil {
@@ -8283,7 +8321,7 @@ func (d *lxc) Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error
 
 	// Get memory stats.
 	memStats, err := cg.GetMemoryStats()
-	if err != nil && isRunning {
+	if err != nil {
 		d.logger.Warn("Failed to get memory stats", logger.Ctx{"err": err})
 	} else {
 		for k, v := range memStats {
@@ -8325,7 +8363,7 @@ func (d *lxc) Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error
 
 	// Get memory usage.
 	memoryUsage, err := cg.GetMemoryUsage()
-	if err != nil && isRunning {
+	if err != nil {
 		d.logger.Warn("Failed to get memory usage", logger.Ctx{"err": err})
 	}
 
@@ -8337,8 +8375,14 @@ func (d *lxc) Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error
 
 	// Get oom kills.
 	oomKills, err := cg.GetOOMKills()
-	if err != nil && isRunning {
+	if err != nil {
 		d.logger.Warn("Failed to get oom kills", logger.Ctx{"err": err})
+	}
+
+	// If we failed to get OOM kills, because of a couple of reasons (instance stopped, cgroup controller not available, etc),
+	// we default to 0 instead of -1 for the MemoryOOMKillsTotal metric (a total of `-1` would be misleading).
+	if oomKills < 0 {
+		oomKills = 0
 	}
 
 	out.AddSamples(metrics.MemoryOOMKillsTotal, metrics.Sample{Value: float64(oomKills)})
@@ -8346,16 +8390,22 @@ func (d *lxc) Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error
 	// Handle swap.
 	if d.state.OS.CGInfo.Supports(cgroup.MemorySwapUsage, cg) {
 		swapUsage, err := cg.GetMemorySwapUsage()
-		if err != nil && isRunning {
+		if err != nil {
 			d.logger.Warn("Failed to get swap usage", logger.Ctx{"err": err})
 		} else {
+			// If we failed to get swap memory usage, because of a couple of reasons (instance stopped, cgroup controller not available, etc),
+			// we default to 0 instead of -1 for the MemorySwapBytes metric (`-1` bytes would be misleading).
+			if swapUsage < 0 {
+				swapUsage = 0
+			}
+
 			out.AddSamples(metrics.MemorySwapBytes, metrics.Sample{Value: float64(swapUsage)})
 		}
 	}
 
 	// Get CPU stats
 	usage, err := cg.GetCPUAcctUsageAll()
-	if err != nil && isRunning {
+	if err != nil {
 		d.logger.Warn("Failed to get CPU usage", logger.Ctx{"err": err})
 	} else {
 		for cpu, stats := range usage {
@@ -8368,15 +8418,21 @@ func (d *lxc) Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error
 
 	// Get CPUs.
 	CPUs, err := cg.GetEffectiveCPUs()
-	if err != nil && isRunning {
+	if err != nil {
 		d.logger.Warn("Failed to get CPUs", logger.Ctx{"err": err})
 	} else {
+		// If we failed to get the number of total effective CPUs, because of a couple of reasons (instance stopped, cgroup controller not available, etc),
+		// we default to 0 instead of -1 for the CPUs metric (a total of `-1` would be misleading).
+		if CPUs < 0 {
+			CPUs = 0
+		}
+
 		out.AddSamples(metrics.CPUs, metrics.Sample{Value: float64(CPUs)})
 	}
 
 	// Get disk stats
 	diskStats, err := cg.GetIOStats()
-	if err != nil && isRunning {
+	if err != nil {
 		d.logger.Warn("Failed to get disk stats", logger.Ctx{"err": err})
 	} else {
 		for disk, stats := range diskStats {
@@ -8391,7 +8447,7 @@ func (d *lxc) Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error
 
 	// Get filesystem stats
 	fsStats, err := d.getFSStats()
-	if err != nil && isRunning {
+	if err != nil {
 		d.logger.Warn("Failed to get fs stats", logger.Ctx{"err": err})
 	} else {
 		out.Merge(fsStats)
@@ -8415,7 +8471,7 @@ func (d *lxc) Metrics(hostInterfaces []net.Interface) (*metrics.MetricSet, error
 
 	// Get number of processes
 	pids, err := d.processesState(d.InitPID())
-	if err != nil && isRunning {
+	if err != nil {
 		d.logger.Warn("Failed to get total number of processes", logger.Ctx{"err": err})
 	} else {
 		out.AddSamples(metrics.ProcsTotal, metrics.Sample{Value: float64(pids)})

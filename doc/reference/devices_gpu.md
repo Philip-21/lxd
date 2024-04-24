@@ -35,15 +35,23 @@ A `physical` GPU device passes an entire GPU through into the instance.
 
 GPU devices of type `physical` have the following device options:
 
-Key         | Type      | Default           | Description
-:--         | :--       | :--               | :--
-`gid`       | int       | `0`               | GID of the device owner in the instance (container only)
-`id`        | string    | -                 | The DRM card ID of the GPU device
-`mode`      | int       | `0660`            | Mode of the device in the instance (container only)
-`pci`       | string    | -                 | The PCI address of the GPU device
-`productid` | string    | -                 | The product ID of the GPU device
-`uid`       | int       | `0`               | UID of the device owner in the instance (container only)
-`vendorid`  | string    | -                 | The vendor ID of the GPU device
+% Include content from [../config_options.txt](../config_options.txt)
+```{include} ../config_options.txt
+    :start-after: <!-- config group device-gpu-physical-device-conf start -->
+    :end-before: <!-- config group device-gpu-physical-device-conf end -->
+```
+
+### Configuration examples
+
+Add all GPUs from the host system as a `physical` GPU device to an instance:
+
+    lxc config device add <instance_name> <device_name> gpu gputype=physical
+
+Add a specific GPU from the host system as a `physical` GPU device to an instance by specifying its PCI address:
+
+    lxc config device add <instance_name> <device_name> gpu gputype=physical pci=<pci_address>
+
+See {ref}`instances-configure-devices` for more information.
 
 (gpu-mdev)=
 ## `gputype`: `mdev`
@@ -60,13 +68,19 @@ You can check the list of available `mdev` profiles by running [`lxc info --reso
 
 GPU devices of type `mdev` have the following device options:
 
-Key         | Type      | Default           | Description
-:--         | :--       | :--               | :--
-`id`        | string    | -                 | The DRM card ID of the GPU device
-`mdev`      | string    | -                 | The `mdev` profile to use (required - for example, `i915-GVTg_V5_4`)
-`pci`       | string    | -                 | The PCI address of the GPU device
-`productid` | string    | -                 | The product ID of the GPU device
-`vendorid`  | string    | -                 | The vendor ID of the GPU device
+% Include content from [../config_options.txt](../config_options.txt)
+```{include} ../config_options.txt
+    :start-after: <!-- config group device-gpu-mdev-device-conf start -->
+    :end-before: <!-- config group device-gpu-mdev-device-conf end -->
+```
+
+### Configuration examples
+
+Add an `mdev` GPU device to an instance by specifying its `mdev` profile and the PCI address of the GPU:
+
+    lxc config device add <instance_name> <device_name> gpu gputype=mdev mdev=<mdev_profile> pci=<pci_address>
+
+See {ref}`instances-configure-devices` for more information.
 
 (gpu-mig)=
 ## `gputype`: `mig`
@@ -83,17 +97,21 @@ Currently, this requires NVIDIA MIG instances to be pre-created.
 
 GPU devices of type `mig` have the following device options:
 
-Key         | Type      | Default           | Description
-:--         | :--       | :--               | :--
-`id`        | string    | -                 | The DRM card ID of the GPU device
-`mig.ci`    | int       | -                 | Existing MIG compute instance ID
-`mig.gi`    | int       | -                 | Existing MIG GPU instance ID
-`mig.uuid`  | string    | -                 | Existing MIG device UUID (`MIG-` prefix can be omitted)
-`pci`       | string    | -                 | The PCI address of the GPU device
-`productid` | string    | -                 | The product ID of the GPU device
-`vendorid`  | string    | -                 | The vendor ID of the GPU device
+% Include content from [../config_options.txt](../config_options.txt)
+```{include} ../config_options.txt
+    :start-after: <!-- config group device-gpu-mig-device-conf start -->
+    :end-before: <!-- config group device-gpu-mig-device-conf end -->
+```
 
-You must set either `mig.uuid` (NVIDIA drivers 470+) or both `mig.ci` and `mig.gi` (old NVIDIA drivers).
+You must set either {config:option}`device-gpu-mig-device-conf:mig.uuid` (NVIDIA drivers 470+) or both {config:option}`device-gpu-mig-device-conf:mig.ci` and {config:option}`device-gpu-mig-device-conf:mig.gi` (old NVIDIA drivers).
+
+### Configuration examples
+
+Add a `mig` GPU device to an instance by specifying its UUID and the PCI address of the GPU:
+
+    lxc config device add <instance_name> <device_name> gpu gputype=mig mig.uuid=<mig_uuid> pci=<pci_address>
+
+See {ref}`instances-configure-devices` for more information.
 
 (gpu-sriov)=
 ## `gputype`: `sriov`
@@ -109,9 +127,16 @@ An `sriov` GPU device passes a virtual function of an SR-IOV-enabled GPU into th
 
 GPU devices of type `sriov` have the following device options:
 
-Key         | Type      | Default           | Description
-:--         | :--       | :--               | :--
-`id`         | string   | -                 | The DRM card ID of the parent GPU device
-`pci`        | string   | -                 | The PCI address of the parent GPU device
-`productid`  | string   | -                 | The product ID of the parent GPU device
-`vendorid`   | string   | -                 | The vendor ID of the parent GPU device
+% Include content from [../config_options.txt](../config_options.txt)
+```{include} ../config_options.txt
+    :start-after: <!-- config group device-gpu-sriov-device-conf start -->
+    :end-before: <!-- config group device-gpu-sriov-device-conf end -->
+```
+
+### Configuration examples
+
+Add a `sriov` GPU device to an instance by specifying the PCI address of the parent GPU:
+
+    lxc config device add <instance_name> <device_name> gpu gputype=sriov pci=<pci_address>
+
+See {ref}`instances-configure-devices` for more information.

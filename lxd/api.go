@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -67,14 +68,46 @@ func restServer(d *Daemon) *http.Server {
 	mux.SkipClean(true)
 	mux.UseEncodedPath() // Allow encoded values in path segments.
 
+	const errorMessage = `<html><title>The UI is not enabled</title><body><p>The UI is not enabled. For instructions to enable it check: <a href="https://documentation.ubuntu.com/lxd/en/latest/howto/access_ui/">How to access the LXD web UI</a></p></body></html>`
+
 	uiPath := os.Getenv("LXD_UI")
 	uiEnabled := uiPath != "" && shared.PathExists(uiPath)
 	if uiEnabled {
 		uiHTTPDir := uiHTTPDir{http.Dir(uiPath)}
-		mux.PathPrefix("/ui/").Handler(http.StripPrefix("/ui/", http.FileServer(uiHTTPDir)))
+
+		// Serve the LXD user interface.
+		uiHandler := http.StripPrefix("/ui/", http.FileServer(uiHTTPDir))
+
+		// Set security headers
+		uiHandlerWithSecurity := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Disables the FLoC (Federated Learning of Cohorts) feature on the browser,
+			// preventing the current page from being included in the user's FLoC calculation.
+			// FLoC is a proposed replacement for third-party cookies to enable interest-based advertising.
+			w.Header().Set("Permissions-Policy", "interest-cohort=()")
+			// Prevents the browser from trying to guess the MIME type, which can have security implications.
+			// This tells the browser to strictly follow the MIME type provided in the Content-Type header.
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			// Restricts the page from being displayed in a frame, iframe, or object to avoid click jacking attacks,
+			// but allows it if the site is navigating to the same origin.
+			w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+			// Sets the Content Security Policy (CSP) for the page, which helps mitigate XSS attacks and data injection attacks.
+			// The policy allows loading resources (scripts, styles, images, etc.) only from the same origin ('self'), data URLs, and all subdomains of ubuntu.com.
+			w.Header().Set("Content-Security-Policy", "default-src 'self' data: https://*.ubuntu.com https://*.canonical.com; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'")
+
+			uiHandler.ServeHTTP(w, r)
+		})
+
+		mux.PathPrefix("/ui/").Handler(uiHandlerWithSecurity)
 		mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
 		})
+	} else {
+		uiHandlerErrorUINotEnabled := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, errorMessage)
+		})
+		mux.PathPrefix("/ui").Handler(uiHandlerErrorUINotEnabled)
 	}
 
 	// Serving the LXD documentation.
@@ -82,7 +115,21 @@ func restServer(d *Daemon) *http.Server {
 	docEnabled := documentationPath != "" && shared.PathExists(documentationPath)
 	if docEnabled {
 		documentationHTTPDir := documentationHTTPDir{http.Dir(documentationPath)}
-		mux.PathPrefix("/documentation/").Handler(http.StripPrefix("/documentation/", http.FileServer(documentationHTTPDir)))
+
+		// Serve the LXD documentation.
+		documentationHandler := http.StripPrefix("/documentation/", http.FileServer(documentationHTTPDir))
+
+		// Set security headers
+		documentationHandlerWithSecurity := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Permissions-Policy", "interest-cohort=()")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+			w.Header().Set("X-Xss-Protection", "1; mode=block")
+
+			documentationHandler.ServeHTTP(w, r)
+		})
+
+		mux.PathPrefix("/documentation/").Handler(documentationHandlerWithSecurity)
 		mux.HandleFunc("/documentation", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/documentation/", http.StatusMovedPermanently)
 		})
@@ -120,9 +167,9 @@ func restServer(d *Daemon) *http.Server {
 		w.Header().Set("Content-Type", "application/json")
 
 		ua := r.Header.Get("User-Agent")
-		if uiEnabled && strings.Contains(ua, "Gecko") {
-			// Web browser handling.
+		if strings.Contains(ua, "Gecko") {
 			http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
+			return
 		} else {
 			// Normal client handling.
 			_ = response.SyncResponse(true, []string{"/1.0"}).Render(w)

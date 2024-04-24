@@ -21,22 +21,24 @@ LXD supports two different kinds of network types for InfiniBand devices:
   Therefore, you must pre-configure the number of virtual functions by configuring the corresponding kernel module.
   ```
 
-To create a `physical` `infiniband` device, use the following command:
-
-    lxc config device add <instance_name> <device_name> infiniband nictype=physical parent=<device>
-
-To create an `sriov` `infiniband` device, use the following command:
-
-    lxc config device add <instance_name> <device_name> infiniband nictype=sriov parent=<sriov_enabled_device>
-
 ## Device options
 
 `infiniband` devices have the following device options:
 
-Key                     | Type      | Default           | Required  | Description
-:--                     | :--       | :--               | :--       | :--
-`hwaddr`                | string    | randomly assigned | no        | The MAC address of the new interface (can be either the full 20-byte variant or the short 8-byte variant, which will only modify the last 8 bytes of the parent device)
-`mtu`                   | integer   | parent MTU        | no        | The MTU of the new interface
-`name`                  | string    | kernel assigned   | no        | The name of the interface inside the instance
-`nictype`               | string    | -                 | yes       | The device type (one of `physical` or `sriov`)
-`parent`                | string    | -                 | yes       | The name of the host device or bridge
+% Include content from [../config_options.txt](../config_options.txt)
+```{include} ../config_options.txt
+    :start-after: <!-- config group device-infiniband-device-conf start -->
+    :end-before: <!-- config group device-infiniband-device-conf end -->
+```
+
+## Configuration examples
+
+Add a `physical` `infiniband` device to an instance:
+
+    lxc config device add <instance_name> <device_name> infiniband nictype=physical parent=<device>
+
+Add an `sriov` `infiniband` device to an instance:
+
+    lxc config device add <instance_name> <device_name> infiniband nictype=sriov parent=<sriov_enabled_device>
+
+See {ref}`instances-configure-devices` for more information.

@@ -13,7 +13,7 @@ See the [LXD-UI GitHub repository](https://github.com/canonical/lxd-ui) for the 
 ```
 
 The LXD web UI provides you with a graphical interface to manage your LXD server and instances.
-It is currently in an early stage and does not provide full functionality yet, but eventually, it will be an alternative to the LXD command-line client.
+It does not provide full functionality yet, but it is constantly evolving, already covering many of the features of the LXD command-line client.
 
 Complete the following steps to access the LXD web UI:
 
@@ -37,3 +37,18 @@ Complete the following steps to access the LXD web UI:
 )
 
 After setting up the certificates, you can start creating instances, editing profiles, or configuring your server.
+
+## Enable or disable the UI
+
+The {ref}`snap configuration option <howto-snap-configure>` `lxd ui.enable` controls whether the UI is enabled for LXD.
+
+Starting with LXD 5.21, the UI is enabled by default.
+If you want to disable it, set the option to `false`:
+
+    sudo snap set lxd ui.enable=false
+    sudo systemctl reload snap.lxd.daemon
+
+To enable it again, or to enable it for older LXD versions (that include the UI), set the option to `true`:
+
+    sudo snap set lxd ui.enable=true
+    sudo systemctl reload snap.lxd.daemon

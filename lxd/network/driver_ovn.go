@@ -298,9 +298,34 @@ func (n *ovn) getExternalSubnetInUse(uplinkNetworkName string) ([]externalSubnet
 // Validate network config.
 func (n *ovn) Validate(config map[string]string) error {
 	rules := map[string]func(value string) error{
-		"network":       validate.IsAny,
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=network)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: Uplink network to use for external network access
+		"network": validate.IsAny,
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=bridge.hwaddr)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: MAC address for the bridge
 		"bridge.hwaddr": validate.Optional(validate.IsNetworkMAC),
-		"bridge.mtu":    validate.Optional(validate.IsNetworkMTU),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=bridge.mtu)
+		// The default value allows the host to host Geneve tunnels.
+		// ---
+		//  type: integer
+		//  defaultdesc: `1442`
+		//  shortdesc: Bridge MTU
+		"bridge.mtu": validate.Optional(validate.IsNetworkMTU),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv4.address)
+		// Use CIDR notation.
+		//
+		// You can set the option to `none` to turn off IPv4, or to `auto` to generate a new random unused subnet.
+		// ---
+		//  type: string
+		//  condition: standard mode
+		//  defaultdesc: initial value on creation: `auto`
+		//  shortdesc: IPv4 address for the bridge
 		"ipv4.address": validate.Optional(func(value string) error {
 			if validate.IsOneOf("none", "auto")(value) == nil {
 				return nil
@@ -308,7 +333,23 @@ func (n *ovn) Validate(config map[string]string) error {
 
 			return validate.IsNetworkAddressCIDRV4(value)
 		}),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv4.dhcp)
+		//
+		// ---
+		//  type: bool
+		//  condition: IPv4 address
+		//  defaultdesc: `true`
+		//  shortdesc: Whether to allocate IPv4 addresses using DHCP
 		"ipv4.dhcp": validate.Optional(validate.IsBool),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv6.address)
+		// Use CIDR notation.
+		//
+		// You can set the option to `none` to turn off IPv6, or to `auto` to generate a new random unused subnet.
+		// ---
+		//  type: string
+		//  condition: standard mode
+		//  defaultdesc: initial value on creation: `auto`
+		//  shortdesc: IPv6 address for the bridge
 		"ipv6.address": validate.Optional(func(value string) error {
 			if validate.IsOneOf("none", "auto")(value) == nil {
 				return nil
@@ -316,24 +357,144 @@ func (n *ovn) Validate(config map[string]string) error {
 
 			return validate.IsNetworkAddressCIDRV6(value)
 		}),
-		"ipv6.dhcp":                            validate.Optional(validate.IsBool),
-		"ipv6.dhcp.stateful":                   validate.Optional(validate.IsBool),
-		"ipv4.nat":                             validate.Optional(validate.IsBool),
-		"ipv4.nat.address":                     validate.Optional(validate.IsNetworkAddressV4),
-		"ipv6.nat":                             validate.Optional(validate.IsBool),
-		"ipv6.nat.address":                     validate.Optional(validate.IsNetworkAddressV6),
-		"ipv4.l3only":                          validate.Optional(validate.IsBool),
-		"ipv6.l3only":                          validate.Optional(validate.IsBool),
-		"dns.domain":                           validate.IsAny,
-		"dns.search":                           validate.IsAny,
-		"dns.zone.forward":                     validate.IsAny,
-		"dns.zone.reverse.ipv4":                validate.IsAny,
-		"dns.zone.reverse.ipv6":                validate.IsAny,
-		"security.acls":                        validate.IsAny,
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv6.dhcp)
+		//
+		// ---
+		//  type: bool
+		//  condition: IPv6 address
+		//  defaultdesc: `true`
+		//  shortdesc: Whether to provide additional network configuration over DHCP
+		"ipv6.dhcp": validate.Optional(validate.IsBool),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv6.dhcp.stateful)
+		//
+		// ---
+		//  type: bool
+		//  condition: IPv6 DHCP
+		//  defaultdesc: `false`
+		//  shortdesc: Whether to allocate IPv6 addresses using DHCP
+		"ipv6.dhcp.stateful": validate.Optional(validate.IsBool),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv4.nat)
+		//
+		// ---
+		//  type: bool
+		//  condition: IPv4 address
+		//  defaultdesc: `false` (initial value on creation if `ipv4.address` is set to `auto`: `true`)
+		//  shortdesc: Whether to use NAT for IPv4
+		"ipv4.nat": validate.Optional(validate.IsBool),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv4.nat.address)
+		//
+		// ---
+		//  type: string
+		//  condition: IPv4 address; requires uplink `ovn.ingress_mode=routed`
+		//  shortdesc: Source address used for outbound traffic from the network
+		"ipv4.nat.address": validate.Optional(validate.IsNetworkAddressV4),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv6.nat)
+		//
+		// ---
+		//  type: bool
+		//  condition: IPv6 address
+		//  defaultdesc: `false` (initial value on creation if `ipv6.address` is set to `auto`: `true`)
+		//  shortdesc: Whether to use NAT for IPv6
+		"ipv6.nat": validate.Optional(validate.IsBool),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv6.nat.address)
+		//
+		// ---
+		//  type: string
+		//  condition: IPv6 address; requires uplink `ovn.ingress_mode=routed`
+		//  shortdesc: Source address used for outbound traffic from the network
+		"ipv6.nat.address": validate.Optional(validate.IsNetworkAddressV6),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv4.l3only)
+		//
+		// ---
+		//  type: bool
+		//  condition: IPv4 address
+		//  defaultdesc: `false`
+		//  shortdesc: Whether to enable layer 3 only mode for IPv4
+		"ipv4.l3only": validate.Optional(validate.IsBool),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=ipv6.l3only)
+		//
+		// ---
+		//  type: bool
+		//  condition: IPv6 DHCP stateful
+		//  defaultdesc: `false`
+		//  shortdesc: Whether to enable layer 3 only mode for IPv6
+		"ipv6.l3only": validate.Optional(validate.IsBool),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=dns.domain)
+		//
+		// ---
+		//  type: string
+		//  defaultdesc: `lxd`
+		//  shortdesc: Domain to advertise to DHCP clients and use for DNS resolution
+		"dns.domain": validate.IsAny,
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=dns.search)
+		// Specify a comma-separated list of domains.
+		// ---
+		//  type: string
+		//  defaultdesc: `dns.domain` value
+		//  shortdesc: Full domain search list
+		"dns.search": validate.IsAny,
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=dns.zone.forward)
+		// Specify a comma-separated list of DNS zone names.
+		// ---
+		//  type: string
+		//  shortdesc:  DNS zone names for forward DNS records
+		"dns.zone.forward": validate.IsAny,
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=dns.zone.reverse.ipv4)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: DNS zone name for IPv4 reverse DNS records
+		"dns.zone.reverse.ipv4": validate.IsAny,
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=dns.zone.reverse.ipv6)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: DNS zone name for IPv6 reverse DNS records
+		"dns.zone.reverse.ipv6": validate.IsAny,
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=security.acls)
+		// Specify a comma-separated list of network ACLs.
+		// ---
+		//  type: string
+		//  shortdesc: Network ACLs to apply to NICs connected to this network
+		"security.acls": validate.IsAny,
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=security.acls.default.ingress.action)
+		// The specified action is used for all ingress traffic that doesn’t match any ACL rule.
+		// ---
+		//  type: string
+		//  condition: `security.acls`
+		//  defaultdesc: `reject`
+		//  shortdesc: Default action to use for ingress traffic
 		"security.acls.default.ingress.action": validate.Optional(validate.IsOneOf(acl.ValidActions...)),
-		"security.acls.default.egress.action":  validate.Optional(validate.IsOneOf(acl.ValidActions...)),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=security.acls.default.egress.action)
+		// The specified action is used for all egress traffic that doesn’t match any ACL rule.
+		// ---
+		//  type: string
+		//  condition: `security.acls`
+		//  defaultdesc: `reject`
+		//  shortdesc: Default action to use for egress traffic
+		"security.acls.default.egress.action": validate.Optional(validate.IsOneOf(acl.ValidActions...)),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=security.acls.default.ingress.logged)
+		//
+		// ---
+		//  type: bool
+		//  condition: `security.acls`
+		//  defaultdesc: `false`
+		//  shortdesc: Whether to log ingress traffic that doesn’t match any ACL rule
 		"security.acls.default.ingress.logged": validate.Optional(validate.IsBool),
-		"security.acls.default.egress.logged":  validate.Optional(validate.IsBool),
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=security.acls.default.egress.logged)
+		//
+		// ---
+		//  type: bool
+		//  condition: `security.acls`
+		//  defaultdesc: `false`
+		//  shortdesc: Whether to log egress traffic that doesn’t match any ACL rule
+		"security.acls.default.egress.logged": validate.Optional(validate.IsBool),
+
+		// lxdmeta:generate(entities=network-ovn; group=network-conf; key=user.*)
+		//
+		// ---
+		//  type: string
+		//  shortdesc: User-provided free-form key/value pairs
 
 		// Volatile keys populated automatically as needed.
 		ovnVolatileUplinkIPv4: validate.Optional(validate.IsNetworkAddressV4),
@@ -998,7 +1159,7 @@ func (n *ovn) allocateUplinkPortIPs(uplinkNet Network, routerMAC net.HardwareAdd
 					return fmt.Errorf(`Missing required "ipv4.ovn.ranges" config key on uplink network`)
 				}
 
-				ipRanges, err := parseIPRanges(uplinkNetConf["ipv4.ovn.ranges"], uplinkNet.DHCPv4Subnet())
+				ipRanges, err := shared.ParseIPRanges(uplinkNetConf["ipv4.ovn.ranges"], uplinkNet.DHCPv4Subnet())
 				if err != nil {
 					return fmt.Errorf("Failed to parse uplink IPv4 OVN ranges: %w", err)
 				}
@@ -1014,7 +1175,7 @@ func (n *ovn) allocateUplinkPortIPs(uplinkNet Network, routerMAC net.HardwareAdd
 			if uplinkIPv6Net != nil && routerExtPortIPv6 == nil {
 				// If IPv6 OVN ranges are specified by the uplink, allocate from them.
 				if uplinkNetConf["ipv6.ovn.ranges"] != "" {
-					ipRanges, err := parseIPRanges(uplinkNetConf["ipv6.ovn.ranges"], uplinkNet.DHCPv6Subnet())
+					ipRanges, err := shared.ParseIPRanges(uplinkNetConf["ipv6.ovn.ranges"], uplinkNet.DHCPv6Subnet())
 					if err != nil {
 						return fmt.Errorf("Failed to parse uplink IPv6 OVN ranges: %w", err)
 					}
@@ -4554,7 +4715,7 @@ func (n *ovn) ForwardCreate(forward api.NetworkForwardsPost, clientType request.
 			return fmt.Errorf("Failed parsing %q: %w", forward.ListenAddress, err)
 		}
 
-		portMaps, err := n.forwardValidate(listenAddressNet.IP, &forward.NetworkForwardPut)
+		portMaps, err := n.forwardValidate(listenAddressNet.IP, forward.NetworkForwardPut)
 		if err != nil {
 			return err
 		}
@@ -4706,7 +4867,7 @@ func (n *ovn) ForwardUpdate(listenAddress string, req api.NetworkForwardPut, cli
 			return err
 		}
 
-		portMaps, err := n.forwardValidate(net.ParseIP(curForward.ListenAddress), &req)
+		portMaps, err := n.forwardValidate(net.ParseIP(curForward.ListenAddress), req)
 		if err != nil {
 			return err
 		}
@@ -4717,9 +4878,10 @@ func (n *ovn) ForwardUpdate(listenAddress string, req api.NetworkForwardPut, cli
 		}
 
 		newForward := api.NetworkForward{
-			ListenAddress:     curForward.ListenAddress,
-			NetworkForwardPut: req,
+			ListenAddress: curForward.ListenAddress,
 		}
+
+		newForward.SetWritable(req)
 
 		newForwardEtagHash, err := util.EtagHash(newForward.Etag())
 		if err != nil {
@@ -4743,7 +4905,7 @@ func (n *ovn) ForwardUpdate(listenAddress string, req api.NetworkForwardPut, cli
 
 		revert.Add(func() {
 			// Apply old settings to OVN on failure.
-			portMaps, err := n.forwardValidate(net.ParseIP(curForward.ListenAddress), &curForward.NetworkForwardPut)
+			portMaps, err := n.forwardValidate(net.ParseIP(curForward.ListenAddress), curForward.Writable())
 			if err == nil {
 				vips := n.forwardFlattenVIPs(net.ParseIP(curForward.ListenAddress), net.ParseIP(curForward.Config["target_address"]), portMaps)
 				_ = client.LoadBalancerApply(n.getLoadBalancerName(curForward.ListenAddress), []openvswitch.OVNRouter{n.getRouterName()}, []openvswitch.OVNSwitch{n.getIntSwitchName()}, vips...)
@@ -4752,7 +4914,7 @@ func (n *ovn) ForwardUpdate(listenAddress string, req api.NetworkForwardPut, cli
 		})
 
 		err = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-			return tx.UpdateNetworkForward(ctx, n.ID(), curForwardID, &newForward.NetworkForwardPut)
+			return tx.UpdateNetworkForward(ctx, n.ID(), curForwardID, newForward.Writable())
 		})
 		if err != nil {
 			return err
@@ -4760,7 +4922,7 @@ func (n *ovn) ForwardUpdate(listenAddress string, req api.NetworkForwardPut, cli
 
 		revert.Add(func() {
 			_ = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-				return tx.UpdateNetworkForward(ctx, n.ID(), curForwardID, &curForward.NetworkForwardPut)
+				return tx.UpdateNetworkForward(ctx, n.ID(), curForwardID, curForward.Writable())
 			})
 		})
 
@@ -4909,7 +5071,7 @@ func (n *ovn) LoadBalancerCreate(loadBalancer api.NetworkLoadBalancersPost, clie
 			return fmt.Errorf("Failed parsing %q: %w", loadBalancer.ListenAddress, err)
 		}
 
-		portMaps, err := n.loadBalancerValidate(listenAddressNet.IP, &loadBalancer.NetworkLoadBalancerPut)
+		portMaps, err := n.loadBalancerValidate(listenAddressNet.IP, loadBalancer.NetworkLoadBalancerPut)
 		if err != nil {
 			return err
 		}
@@ -5061,7 +5223,7 @@ func (n *ovn) LoadBalancerUpdate(listenAddress string, req api.NetworkLoadBalanc
 			return err
 		}
 
-		portMaps, err := n.loadBalancerValidate(net.ParseIP(curLoadBalancer.ListenAddress), &req)
+		portMaps, err := n.loadBalancerValidate(net.ParseIP(curLoadBalancer.ListenAddress), req)
 		if err != nil {
 			return err
 		}
@@ -5072,9 +5234,10 @@ func (n *ovn) LoadBalancerUpdate(listenAddress string, req api.NetworkLoadBalanc
 		}
 
 		newLoadBalancer := api.NetworkLoadBalancer{
-			ListenAddress:          curLoadBalancer.ListenAddress,
-			NetworkLoadBalancerPut: req,
+			ListenAddress: curLoadBalancer.ListenAddress,
 		}
+
+		newLoadBalancer.SetWritable(req)
 
 		newLoadBalancerEtagHash, err := util.EtagHash(newLoadBalancer.Etag())
 		if err != nil {
@@ -5099,7 +5262,7 @@ func (n *ovn) LoadBalancerUpdate(listenAddress string, req api.NetworkLoadBalanc
 
 		revert.Add(func() {
 			// Apply old settings to OVN on failure.
-			portMaps, err := n.loadBalancerValidate(net.ParseIP(curLoadBalancer.ListenAddress), &curLoadBalancer.NetworkLoadBalancerPut)
+			portMaps, err := n.loadBalancerValidate(net.ParseIP(curLoadBalancer.ListenAddress), curLoadBalancer.Writable())
 			if err == nil {
 				vips := n.loadBalancerFlattenVIPs(net.ParseIP(curLoadBalancer.ListenAddress), portMaps)
 				_ = client.LoadBalancerApply(n.getLoadBalancerName(curLoadBalancer.ListenAddress), []openvswitch.OVNRouter{n.getRouterName()}, []openvswitch.OVNSwitch{n.getIntSwitchName()}, vips...)
@@ -5108,7 +5271,7 @@ func (n *ovn) LoadBalancerUpdate(listenAddress string, req api.NetworkLoadBalanc
 		})
 
 		err = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-			return tx.UpdateNetworkLoadBalancer(ctx, n.ID(), curLoadBalancerID, &newLoadBalancer.NetworkLoadBalancerPut)
+			return tx.UpdateNetworkLoadBalancer(ctx, n.ID(), curLoadBalancerID, newLoadBalancer.Writable())
 		})
 		if err != nil {
 			return err
@@ -5116,7 +5279,7 @@ func (n *ovn) LoadBalancerUpdate(listenAddress string, req api.NetworkLoadBalanc
 
 		revert.Add(func() {
 			_ = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-				return tx.UpdateNetworkLoadBalancer(ctx, n.ID(), curLoadBalancerID, &curLoadBalancer.NetworkLoadBalancerPut)
+				return tx.UpdateNetworkLoadBalancer(ctx, n.ID(), curLoadBalancerID, curLoadBalancer.Writable())
 			})
 		})
 
@@ -5579,9 +5742,10 @@ func (n *ovn) PeerUpdate(peerName string, req api.NetworkPeerPut) error {
 	}
 
 	newPeer := api.NetworkPeer{
-		Name:           curPeer.Name,
-		NetworkPeerPut: req,
+		Name: curPeer.Name,
 	}
+
+	newPeer.SetWritable(req)
 
 	newPeerEtagHash, err := util.EtagHash(newPeer.Etag())
 	if err != nil {
@@ -5593,7 +5757,7 @@ func (n *ovn) PeerUpdate(peerName string, req api.NetworkPeerPut) error {
 	}
 
 	err = n.state.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		return tx.UpdateNetworkPeer(ctx, n.ID(), curPeerID, &newPeer.NetworkPeerPut)
+		return tx.UpdateNetworkPeer(ctx, n.ID(), curPeerID, newPeer.Writable())
 	})
 	if err != nil {
 		return err

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -403,7 +402,7 @@ func networksPost(d *Daemon, r *http.Request) response.Response {
 			return tx.CreatePendingNetwork(ctx, targetNode, projectName, req.Name, netType.DBType(), req.Config)
 		})
 		if err != nil {
-			if err == db.ErrAlreadyDefined {
+			if api.StatusErrorCheck(err, http.StatusConflict) {
 				return response.BadRequest(fmt.Errorf("The network is already defined on member %q", targetNode))
 			}
 
@@ -447,7 +446,7 @@ func networksPost(d *Daemon, r *http.Request) response.Response {
 					// Don't pass in any config, as these nodes don't have any node-specific
 					// config and we don't want to create duplicate global config.
 					err = tx.CreatePendingNetwork(ctx, member.Name, projectName, req.Name, netType.DBType(), nil)
-					if err != nil && !errors.Is(err, db.ErrAlreadyDefined) {
+					if err != nil && !api.StatusErrorCheck(err, http.StatusConflict) {
 						return fmt.Errorf("Failed creating pending network for member %q: %w", member.Name, err)
 					}
 				}
@@ -505,11 +504,6 @@ func networksPost(d *Daemon, r *http.Request) response.Response {
 	err = doNetworksCreate(s, n, clientType)
 	if err != nil {
 		return response.SmartError(err)
-	}
-
-	err = s.Authorizer.AddNetwork(r.Context(), projectName, req.Name)
-	if err != nil {
-		logger.Error("Failed to add network to authorizer", logger.Ctx{"name": req.Name, "project": projectName, "error": err})
 	}
 
 	requestor := request.CreateRequestor(r)
@@ -870,11 +864,11 @@ func doNetworkGet(s *state.State, r *http.Request, allNodes bool, projectName st
 		apiNet.Type = n.Type()
 
 		err = s.Authorizer.CheckPermission(r.Context(), r, entity.NetworkURL(projectName, networkName), auth.EntitlementCanEdit)
-		if err == nil {
-			// Only allow admins to see network config as sensitive info can be stored there.
-			apiNet.Config = n.Config()
-		} else if !api.StatusErrorCheck(err, http.StatusForbidden) {
+		if err != nil && !auth.IsDeniedError(err) {
 			return api.Network{}, err
+		} else if err == nil {
+			// Only allow users that can edit network config to view it as sensitive info can be stored there.
+			apiNet.Config = n.Config()
 		}
 
 		// If no member is specified, we omit the node-specific fields.
@@ -1032,11 +1026,6 @@ func networkDelete(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	err = s.Authorizer.DeleteNetwork(r.Context(), projectName, networkName)
-	if err != nil {
-		logger.Error("Failed to remove network from authorizer", logger.Ctx{"name": networkName, "project": projectName, "error": err})
-	}
-
 	requestor := request.CreateRequestor(r)
 	s.Events.SendLifecycle(projectName, lifecycle.NetworkDeleted.Event(n, requestor, nil))
 
@@ -1162,11 +1151,6 @@ func networkPost(d *Daemon, r *http.Request) response.Response {
 	err = n.Rename(req.Name)
 	if err != nil {
 		return response.SmartError(err)
-	}
-
-	err = s.Authorizer.RenameNetwork(r.Context(), projectName, networkName, req.Name)
-	if err != nil {
-		logger.Error("Failed to rename network in authorizer", logger.Ctx{"old_name": networkName, "new_name": req.Name, "project": projectName, "error": err})
 	}
 
 	requestor := request.CreateRequestor(r)

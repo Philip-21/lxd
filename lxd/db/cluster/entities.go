@@ -48,7 +48,7 @@ const (
 	entityTypeNetworkZone           int64 = 19
 	entityTypeImageAlias            int64 = 20
 	entityTypeServer                int64 = 21
-	entityTypeGroup                 int64 = 22
+	entityTypeAuthGroup             int64 = 22
 	entityTypeIdentityProviderGroup int64 = 23
 	entityTypeIdentity              int64 = 24
 )
@@ -118,6 +118,12 @@ func (e *EntityType) Scan(value any) error {
 		*e = EntityType(entity.TypeImageAlias)
 	case entityTypeServer:
 		*e = EntityType(entity.TypeServer)
+	case entityTypeAuthGroup:
+		*e = EntityType(entity.TypeAuthGroup)
+	case entityTypeIdentityProviderGroup:
+		*e = EntityType(entity.TypeIdentityProviderGroup)
+	case entityTypeIdentity:
+		*e = EntityType(entity.TypeIdentity)
 	default:
 		return fmt.Errorf("Unknown entity type %d", entityTypeInt)
 	}
@@ -174,6 +180,12 @@ func (e EntityType) Value() (driver.Value, error) {
 		return entityTypeImageAlias, nil
 	case EntityType(entity.TypeServer):
 		return entityTypeServer, nil
+	case EntityType(entity.TypeAuthGroup):
+		return entityTypeAuthGroup, nil
+	case EntityType(entity.TypeIdentityProviderGroup):
+		return entityTypeIdentityProviderGroup, nil
+	case EntityType(entity.TypeIdentity):
+		return entityTypeIdentity, nil
 	default:
 		return nil, fmt.Errorf("Unknown entity type %q", e)
 	}
@@ -456,6 +468,42 @@ var storageBucketEntityByID = fmt.Sprintf(`%s WHERE storage_buckets.id = ?`, sto
 // storageBucketEntities returns all entities of type entity.TypeStorageBucket in a particular project.
 var storageBucketEntitiesByProjectName = fmt.Sprintf(`%s WHERE projects.name = ?`, storageBucketEntities)
 
+// authGroupEntities returns all entities of type entity.TypeGroup.
+var authGroupEntities = fmt.Sprintf(`SELECT %d, auth_groups.id, '', '', json_array(auth_groups.name) FROM auth_groups`, entityTypeAuthGroup)
+
+// authGroupEntityByID gets the entity of type entity.TypeGroup with a particular ID.
+var authGroupEntityByID = fmt.Sprintf(`%s WHERE auth_groups.id = ?`, authGroupEntities)
+
+// identityProviderGroupEntities returns all entities of type entity.TypeIdentityProviderGroup.
+var identityProviderGroupEntities = fmt.Sprintf(`SELECT %d, identity_provider_groups.id, '', '', json_array(identity_provider_groups.name) FROM identity_provider_groups`, entityTypeIdentityProviderGroup)
+
+// identityProviderGroupByEntityID gets the entity of type entity.TypeIdentityProviderGroup with a particular ID.
+var identityProviderGroupEntityByID = fmt.Sprintf(`%s WHERE identity_provider_groups.id = ?`, identityProviderGroupEntities)
+
+// identityEntities returns all entities of type entity.TypeIdentity.
+var identityEntities = fmt.Sprintf(`
+SELECT 
+	%d, 
+	identities.id, 
+	'', 
+	'', 
+	json_array(
+		CASE identities.auth_method
+			WHEN %d THEN '%s'
+			WHEN %d THEN '%s'
+		END,
+		identities.identifier
+	) 
+FROM identities
+`,
+	entityTypeIdentity,
+	authMethodTLS, api.AuthenticationMethodTLS,
+	authMethodOIDC, api.AuthenticationMethodOIDC,
+)
+
+// identityEntityByID gets the entity of type entity.TypeIdentity with a particular ID.
+var identityEntityByID = fmt.Sprintf(`%s WHERE identities.id = ?`, identityEntities)
+
 // entityStatementsAll is a map of entity type to the statement which queries for all URL information for entities of that type.
 var entityStatementsAll = map[entity.Type]string{
 	entity.TypeContainer:             containerEntities,
@@ -479,6 +527,9 @@ var entityStatementsAll = map[entity.Type]string{
 	entity.TypeStorageBucket:         storageBucketEntities,
 	entity.TypeImageAlias:            imageAliasEntities,
 	entity.TypeNetworkZone:           networkZoneEntities,
+	entity.TypeAuthGroup:             authGroupEntities,
+	entity.TypeIdentityProviderGroup: identityProviderGroupEntities,
+	entity.TypeIdentity:              identityEntities,
 }
 
 // entityStatementsByID is a map of entity type to the statement which queries for all URL information for a single entity of that type with a given ID.
@@ -504,6 +555,9 @@ var entityStatementsByID = map[entity.Type]string{
 	entity.TypeStorageBucket:         storageBucketEntityByID,
 	entity.TypeImageAlias:            imageAliasEntityByID,
 	entity.TypeNetworkZone:           networkZoneEntityByID,
+	entity.TypeAuthGroup:             authGroupEntityByID,
+	entity.TypeIdentityProviderGroup: identityProviderGroupEntityByID,
+	entity.TypeIdentity:              identityEntityByID,
 }
 
 // entityStatementsByProjectName is a map of entity type to the statement which queries for all URL information for all entities of that type within a given project.
@@ -526,24 +580,24 @@ var entityStatementsByProjectName = map[entity.Type]string{
 	entity.TypeNetworkZone:           networkZoneEntitiesByProjectName,
 }
 
-// entityRef represents the expected format of entity URL queries.
-type entityRef struct {
-	entityType  EntityType
-	entityID    int
-	projectName string
-	location    string
-	pathArgs    []string
+// EntityRef represents the expected format of entity URL queries.
+type EntityRef struct {
+	EntityType  EntityType
+	EntityID    int
+	ProjectName string
+	Location    string
+	PathArgs    []string
 }
 
 // scan accepts a scanning function (e.g. `(*sql.Row).Scan`) and uses it to parse the row and set its fields.
-func (e *entityRef) scan(scan func(dest ...any) error) error {
+func (e *EntityRef) scan(scan func(dest ...any) error) error {
 	var pathArgs string
-	err := scan(&e.entityType, &e.entityID, &e.projectName, &e.location, &pathArgs)
+	err := scan(&e.EntityType, &e.EntityID, &e.ProjectName, &e.Location, &pathArgs)
 	if err != nil {
 		return fmt.Errorf("Failed to scan entity URL: %w", err)
 	}
 
-	err = json.Unmarshal([]byte(pathArgs), &e.pathArgs)
+	err = json.Unmarshal([]byte(pathArgs), &e.PathArgs)
 	if err != nil {
 		return fmt.Errorf("Failed to unmarshal entity URL path arguments: %w", err)
 	}
@@ -551,9 +605,9 @@ func (e *entityRef) scan(scan func(dest ...any) error) error {
 	return nil
 }
 
-// getURL is a convenience for generating a URL from the entityRef.
-func (e *entityRef) getURL() (*api.URL, error) {
-	u, err := entity.Type(e.entityType).URL(e.projectName, e.location, e.pathArgs...)
+// getURL is a convenience for generating a URL from the EntityRef.
+func (e *EntityRef) getURL() (*api.URL, error) {
+	u, err := entity.Type(e.EntityType).URL(e.ProjectName, e.Location, e.PathArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to create entity URL: %w", err)
 	}
@@ -573,14 +627,12 @@ func GetEntityURL(ctx context.Context, tx *sql.Tx, entityType entity.Type, entit
 	}
 
 	row := tx.QueryRowContext(ctx, stmt, entityID)
-	if errors.Is(row.Err(), sql.ErrNoRows) {
-		return nil, api.StatusErrorf(http.StatusNotFound, "No entity found with id `%d` and type %q", entityID, entityType)
-	}
-
-	entityRef := &entityRef{}
+	entityRef := &EntityRef{}
 	err := entityRef.scan(row.Scan)
-	if err != nil {
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("Failed to scan entity URL: %w", err)
+	} else if err != nil {
+		return nil, api.StatusErrorf(http.StatusNotFound, "No entity found with id `%d` and type %q", entityID, entityType)
 	}
 
 	return entityRef.getURL()
@@ -663,7 +715,7 @@ func GetEntityURLs(ctx context.Context, tx *sql.Tx, projectName string, entityTy
 	}
 
 	for rows.Next() {
-		entityRef := &entityRef{}
+		entityRef := &EntityRef{}
 		err := entityRef.scan(rows.Scan)
 		if err != nil {
 			return nil, fmt.Errorf("Failed to scan entity URL: %w", err)
@@ -674,8 +726,819 @@ func GetEntityURLs(ctx context.Context, tx *sql.Tx, projectName string, entityTy
 			return nil, err
 		}
 
-		result[entity.Type(entityRef.entityType)][entityRef.entityID] = u
+		result[entity.Type(entityRef.EntityType)][entityRef.EntityID] = u
 	}
 
 	return result, nil
 }
+
+/*
+The following queries return the ID of an entity by the information contained in its unique URL in a common format.
+These queries are not used in isolation, they are used together as part of a larger UNION query.
+Because of this, all of the below queries expect as arguments the project name, the location, and the path arguments of
+the URL.
+Some entity types don't require a project name or location, so that's why they explicitly check for an empty project
+name or location being passed in.
+Additionally, all of the queries accept an index number as their first binding so that the results can be correlated in
+the calling function (see PopulateEntityReferencesFromURLs below).
+
+TODO: We could avoid a query snippet per entity by making these snippets support multiple entities for a single entity type.
+(e.g. `WHERE projects.name IN (?, ...) AND instances.name IN (?, ...)` we'd need to be very careful!).
+*/
+
+// containerIDFromURL gets the ID of a container from its URL.
+var containerIDFromURL = fmt.Sprintf(`
+SELECT ?, instances.id 
+FROM instances 
+JOIN projects ON instances.project_id = projects.id 
+WHERE projects.name = ? 
+	AND '' = ? 
+	AND instances.name = ? 
+	AND instances.type = %d
+`, instancetype.Container)
+
+// imageIDFromURL gets the ID of an image from its URL.
+var imageIDFromURL = `
+SELECT ?, images.id 
+FROM images 
+JOIN projects ON images.project_id = projects.id 
+WHERE projects.name = ? 
+	AND '' = ? 
+	AND images.fingerprint = ?`
+
+// profileIDFromURL gets the ID of a profile from its URL.
+var profileIDFromURL = `
+SELECT ?, profiles.id 
+FROM profiles 
+JOIN projects ON profiles.project_id = projects.id 
+WHERE projects.name = ? 
+	AND '' = ? 
+	AND profiles.name = ?`
+
+// projectIDFromURL gets the ID of a project from its URL.
+var projectIDFromURL = `
+SELECT ?, projects.id 
+FROM projects 
+WHERE '' = ? 
+	AND '' = ? 
+	AND projects.name = ?`
+
+// certificateIDFromURL gets the ID of a certificate from its URL.
+var certificateIDFromURL = fmt.Sprintf(`
+SELECT ?, identities.id 
+FROM identities 
+WHERE '' = ? 
+	AND '' = ? 
+	AND identities.identifier = ? 
+	AND identities.auth_method = %d
+`, authMethodTLS)
+
+// instanceIDFromURL gets the ID of an instance from its URL.
+var instanceIDFromURL = `
+SELECT ?, instances.id 
+FROM instances 
+JOIN projects ON instances.project_id = projects.id 
+WHERE projects.name = ? 
+	AND '' = ? 
+	AND instances.name = ?`
+
+// instanceBackupIDFromURL gets the ID of an instance backup from its URL.
+var instanceBackupIDFromURL = `
+SELECT ?, instances_backups.id 
+FROM instances_backups 
+JOIN instances ON instances_backups.instance_id = instances.id 
+JOIN projects ON instances.project_id = projects.id 
+WHERE projects.name = ? 
+	AND '' = ? 
+	AND instances.name = ? 
+	AND instances_backups.name = ?`
+
+// instanceSnapshotIDFromURL gets the ID of an instance snapshot from its URL.
+var instanceSnapshotIDFromURL = `
+SELECT ?, instances_snapshots.id 
+FROM instances_snapshots 
+JOIN instances ON instances_snapshots.instance_id = instances.id 
+JOIN projects ON instances.project_id = projects.id 
+WHERE projects.name = ? 
+	AND '' = ? 
+	AND instances.name = ? 
+	AND instances_snapshots.name = ?`
+
+// networkIDFromURL gets the ID of a network from its URL.
+var networkIDFromURL = `
+SELECT ?, networks.id 
+FROM networks 
+JOIN projects ON networks.project_id = projects.id 
+WHERE projects.name = ? 
+	AND '' = ? 
+	AND networks.name = ?`
+
+// networkACLIDFromURL gets the ID of a network ACL from its URL.
+var networkACLIDFromURL = `
+SELECT ?, networks_acls.id 
+FROM networks_acls 
+JOIN projects ON networks_acls.project_id = projects.id 
+WHERE projects.name = ? 
+	AND '' = ? 
+	AND networks_acls.name = ?`
+
+// nodeIDFromURL gets the ID of a node from its URL.
+var nodeIDFromURL = `
+SELECT ?, nodes.id 
+FROM nodes 
+WHERE '' = ? 
+	AND '' = ? 
+	AND nodes.name = ?`
+
+// operationIDFromURL gets the ID of an operation from its URL.
+var operationIDFromURL = `
+SELECT ?, operations.id 
+FROM operations 
+LEFT JOIN projects ON operations.project_id = projects.id 
+WHERE coalesce(projects.name, '') = ? 
+	AND '' = ? 
+	AND operations.uuid = ?`
+
+// storagePoolIDFromURL gets the ID of a storage pool from its URL.
+var storagePoolIDFromURL = `
+SELECT ?, storage_pools.id 
+FROM storage_pools 
+WHERE '' = ? 
+	AND '' = ? 
+	AND storage_pools.name = ?`
+
+// storageVolumeIDFromURL gets the ID of a storage volume from its URL.
+var storageVolumeIDFromURL = fmt.Sprintf(`
+SELECT ?, storage_volumes.id 
+FROM storage_volumes
+JOIN projects ON storage_volumes.project_id = projects.id
+JOIN storage_pools ON storage_volumes.storage_pool_id = storage_pools.id
+LEFT JOIN nodes ON storage_volumes.node_id = nodes.id
+WHERE projects.name = ? 
+	AND replace(coalesce(nodes.name, ''), 'none', '') = ? 
+	AND storage_pools.name = ? 
+	AND CASE storage_volumes.type 
+		WHEN %d THEN '%s' 
+		WHEN %d THEN '%s' 
+		WHEN %d THEN '%s' 
+		WHEN %d THEN '%s' 
+	END = ? 
+	AND storage_volumes.name = ?
+`, StoragePoolVolumeTypeContainer, StoragePoolVolumeTypeNameContainer,
+	StoragePoolVolumeTypeImage, StoragePoolVolumeTypeNameImage,
+	StoragePoolVolumeTypeCustom, StoragePoolVolumeTypeNameCustom,
+	StoragePoolVolumeTypeVM, StoragePoolVolumeTypeNameVM)
+
+// storageVolumeBackupIDFromURL gets the ID of a storageVolumeBackup from its URL.
+var storageVolumeBackupIDFromURL = fmt.Sprintf(`
+SELECT ?, storage_volumes_backups.id 
+FROM storage_volumes_backups
+JOIN storage_volumes ON storage_volumes_backups.storage_volume_id = storage_volumes.id
+JOIN projects ON storage_volumes.project_id = projects.id
+JOIN storage_pools ON storage_volumes.storage_pool_id = storage_pools.id
+LEFT JOIN nodes ON storage_volumes.node_id = nodes.id
+WHERE projects.name = ? 
+	AND replace(coalesce(nodes.name, ''), 'none', '') = ? 
+	AND storage_pools.name = ? 
+	AND CASE storage_volumes.type 
+		WHEN %d THEN '%s' 
+		WHEN %d THEN '%s' 
+		WHEN %d THEN '%s' 
+		WHEN %d THEN '%s' 
+	END = ? 
+	AND storage_volumes.name = ? 
+	AND storage_volumes_backups.name = ?
+`, StoragePoolVolumeTypeContainer, StoragePoolVolumeTypeNameContainer,
+	StoragePoolVolumeTypeImage, StoragePoolVolumeTypeNameImage,
+	StoragePoolVolumeTypeCustom, StoragePoolVolumeTypeNameCustom,
+	StoragePoolVolumeTypeVM, StoragePoolVolumeTypeNameVM)
+
+// storageVolumeSnapshotIDFromURL gets the ID of a storageVolumeSnapshot from its URL.
+var storageVolumeSnapshotIDFromURL = fmt.Sprintf(`
+SELECT ?, storage_volumes_snapshots.id 
+FROM storage_volumes_snapshots
+JOIN storage_volumes ON storage_volumes_snapshots.storage_volume_id = storage_volumes.id
+JOIN projects ON storage_volumes.project_id = projects.id
+JOIN storage_pools ON storage_volumes.storage_pool_id = storage_pools.id
+LEFT JOIN nodes ON storage_volumes.node_id = nodes.id
+WHERE projects.name = ? 
+	AND replace(coalesce(nodes.name, ''), 'none', '') = ? 
+	AND storage_pools.name = ? 
+	AND CASE storage_volumes.type
+		WHEN %d THEN '%s' 
+		WHEN %d THEN '%s' 
+		WHEN %d THEN '%s' 
+		WHEN %d THEN '%s' 
+	END = ? 
+	AND storage_volumes.name = ? 
+	AND storage_volumes_snapshots.name = ?
+`, StoragePoolVolumeTypeContainer, StoragePoolVolumeTypeNameContainer, StoragePoolVolumeTypeImage, StoragePoolVolumeTypeNameImage, StoragePoolVolumeTypeCustom, StoragePoolVolumeTypeNameCustom, StoragePoolVolumeTypeVM, StoragePoolVolumeTypeNameVM)
+
+// warningIDFromURL gets the ID of a warning from its URL.
+var warningIDFromURL = `
+SELECT ?, warnings.id 
+FROM warnings 
+LEFT JOIN projects ON warnings.project_id = projects.id 
+WHERE coalesce(projects.name, '') = ? 
+	AND '' = ? 
+	AND warnings.uuid = ?`
+
+// clusterGroupIDFromURL gets the ID of a clusterGroup from its URL.
+var clusterGroupIDFromURL = `
+SELECT ?, cluster_groups.id 
+FROM cluster_groups 
+WHERE '' = ? 
+	AND '' = ? 
+	AND cluster_groups.name = ?`
+
+// storageBucketIDFromURL gets the ID of a storageBucket from its URL.
+var storageBucketIDFromURL = `
+SELECT ?, storage_buckets.id 
+FROM storage_buckets
+JOIN projects ON storage_buckets.project_id = projects.id
+JOIN storage_pools ON storage_buckets.storage_pool_id = storage_pools.id
+LEFT JOIN nodes ON storage_buckets.node_id = nodes.id
+WHERE projects.name = ? 
+	AND replace(coalesce(nodes.name, ''), 'none', '') = ? 
+	AND storage_pools.name = ? 
+	AND storage_buckets.name = ?
+`
+
+// networkZoneIDFromURL gets the ID of a networkZone from its URL.
+var networkZoneIDFromURL = `
+SELECT ?, networks_zones.id 
+FROM networks_zones 
+JOIN projects ON networks_zones.project_id = projects.id 
+WHERE projects.name = ? 
+	AND '' = ? 
+	AND networks_zones.name = ?`
+
+// imageAliasIDFromURL gets the ID of a imageAlias from its URL.
+var imageAliasIDFromURL = `
+SELECT ?, images_aliases.id 
+FROM images_aliases 
+JOIN projects ON images_aliases.project_id = projects.id 
+WHERE projects.name = ? 
+	AND '' = ? 
+	AND images_aliases.name = ? `
+
+// authGroupIDFromURL gets the ID of a group from its URL.
+var authGroupIDFromURL = `
+SELECT ?, auth_groups.id 
+FROM auth_groups 
+WHERE '' = ? 
+	AND '' = ? 
+	AND auth_groups.name = ?`
+
+// identityProviderGroupIDFromURL gets the ID of a identityProviderGroup from its URL.
+var identityProviderGroupIDFromURL = `
+SELECT ?, identity_provider_groups.id 
+FROM identity_provider_groups 
+WHERE '' = ? 
+	AND '' = ? 
+	AND identity_provider_groups.name = ?`
+
+// identityIDFromURL gets the ID of a identity from its URL.
+var identityIDFromURL = fmt.Sprintf(`
+SELECT ?, identities.id 
+FROM identities 
+WHERE '' = ? 
+	AND '' = ? 
+	AND CASE identities.auth_method 
+		WHEN %d THEN '%s' 
+		WHEN %d THEN '%s' 
+	END = ? 
+	AND identities.identifier = ?
+`, authMethodTLS, api.AuthenticationMethodTLS,
+	authMethodOIDC, api.AuthenticationMethodOIDC)
+
+// identityIDFromURLStatements is a map of entity.Type to a statement that can be used to get the ID of the entity from its URL.
+var entityIDFromURLStatements = map[entity.Type]string{
+	entity.TypeContainer:             containerIDFromURL,
+	entity.TypeImage:                 imageIDFromURL,
+	entity.TypeProfile:               profileIDFromURL,
+	entity.TypeProject:               projectIDFromURL,
+	entity.TypeCertificate:           certificateIDFromURL,
+	entity.TypeInstance:              instanceIDFromURL,
+	entity.TypeInstanceBackup:        instanceBackupIDFromURL,
+	entity.TypeInstanceSnapshot:      instanceSnapshotIDFromURL,
+	entity.TypeNetwork:               networkIDFromURL,
+	entity.TypeNetworkACL:            networkACLIDFromURL,
+	entity.TypeNode:                  nodeIDFromURL,
+	entity.TypeOperation:             operationIDFromURL,
+	entity.TypeStoragePool:           storagePoolIDFromURL,
+	entity.TypeStorageVolume:         storageVolumeIDFromURL,
+	entity.TypeStorageVolumeBackup:   storageVolumeBackupIDFromURL,
+	entity.TypeStorageVolumeSnapshot: storageVolumeSnapshotIDFromURL,
+	entity.TypeWarning:               warningIDFromURL,
+	entity.TypeClusterGroup:          clusterGroupIDFromURL,
+	entity.TypeStorageBucket:         storageBucketIDFromURL,
+	entity.TypeImageAlias:            imageAliasIDFromURL,
+	entity.TypeNetworkZone:           networkZoneIDFromURL,
+	entity.TypeAuthGroup:             authGroupIDFromURL,
+	entity.TypeIdentityProviderGroup: identityProviderGroupIDFromURL,
+	entity.TypeIdentity:              identityIDFromURL,
+}
+
+// PopulateEntityReferencesFromURLs populates the values in the given map with entity references corresponding to the api.URL keys.
+// It will return an error if any of the given URLs do not correspond to a LXD entity.
+func PopulateEntityReferencesFromURLs(ctx context.Context, tx *sql.Tx, entityURLMap map[*api.URL]*EntityRef) error {
+	// If the input list is empty, nothing to do.
+	if len(entityURLMap) == 0 {
+		return nil
+	}
+
+	entityURLs := make([]*api.URL, 0, len(entityURLMap))
+	for entityURL := range entityURLMap {
+		entityURLs = append(entityURLs, entityURL)
+	}
+
+	stmts := make([]string, 0, len(entityURLs))
+	var args []any
+	for i, entityURL := range entityURLs {
+		// Parse the URL to get the majority of the fields of the EntityRef for that URL.
+		entityType, projectName, location, pathArgs, err := entity.ParseURL(entityURL.URL)
+		if err != nil {
+			return fmt.Errorf("Failed to get entity IDs from URLs: %w", err)
+		}
+
+		// Populate the result map.
+		entityURLMap[entityURL] = &EntityRef{
+			EntityType:  EntityType(entityType),
+			ProjectName: projectName,
+			Location:    location,
+			PathArgs:    pathArgs,
+		}
+
+		// If the given URL is the server url it is valid but there is no need to perform a query for it, the entity
+		// ID of the server is always zero (by virtue of being the zero value for int).
+		if entityType == entity.TypeServer {
+			continue
+		}
+
+		// Get the statement corresponding to the entity type.
+		stmt, ok := entityIDFromURLStatements[entityType]
+		if !ok {
+			return fmt.Errorf("Could not get entity IDs from URLs: No statement found for entity type %q", entityType)
+		}
+
+		// Each statement accepts an identifier for the query, the project name, the location, and all path arguments as arguments.
+		// In this case we can use the index of the url from the argument slice as an identifier.
+		stmts = append(stmts, stmt)
+		args = append(args, i, projectName, location)
+		for _, pathArg := range pathArgs {
+			args = append(args, pathArg)
+		}
+	}
+
+	// If the only argument was a server URL we don't have any statements to execute.
+	if len(stmts) == 0 {
+		return nil
+	}
+
+	// Join the statements with a union and execute.
+	stmt := strings.Join(stmts, " UNION ")
+	rows, err := tx.QueryContext(ctx, stmt, args...)
+	if err != nil {
+		return fmt.Errorf("Failed to get entityIDs from URLS: %w", err)
+	}
+
+	for rows.Next() {
+		var rowID, entityID int
+		err = rows.Scan(&rowID, &entityID)
+		if err != nil {
+			return fmt.Errorf("Failed to get entityIDs from URLS: %w", err)
+		}
+
+		if rowID >= len(entityURLs) {
+			return fmt.Errorf("Failed to get entityIDs from URLS: Internal error, returned row ID greater than number of URLs")
+		}
+
+		// Using the row ID, get the *api.URL from the argument slice, then use it as a key in our result map to get the *EntityRef.
+		entityRef, ok := entityURLMap[entityURLs[rowID]]
+		if !ok {
+			return fmt.Errorf("Failed to get entityIDs from URLS: Internal error, entity URL missing from result object")
+		}
+
+		// Set the value of the EntityID in the *EntityRef.
+		entityRef.EntityID = entityID
+	}
+
+	err = rows.Err()
+	if err != nil {
+		return fmt.Errorf("Failed to get entity IDs from URLs: %w", err)
+	}
+
+	// Check that all given URLs have been resolved to an ID.
+	for u, ref := range entityURLMap {
+		if ref.EntityID == 0 && ref.EntityType != EntityType(entity.TypeServer) {
+			return fmt.Errorf("Failed to find entity ID for URL %q", u.String())
+		}
+	}
+
+	return nil
+}
+
+// GetEntityReferenceFromURL gets a single EntityRef by parsing the given api.URL and finding the ID of the entity.
+// It is used by the OpenFGA datastore implementation to find permissions for the entity with the given URL.
+func GetEntityReferenceFromURL(ctx context.Context, tx *sql.Tx, entityURL *api.URL) (*EntityRef, error) {
+	// Parse the URL to get the majority of the fields of the EntityRef for that URL.
+	entityType, projectName, location, pathArgs, err := entity.ParseURL(entityURL.URL)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get entity ID from URL: %w", err)
+	}
+
+	// Populate the fields we know from the URL.
+	entityRef := &EntityRef{
+		EntityType:  EntityType(entityType),
+		ProjectName: projectName,
+		Location:    location,
+		PathArgs:    pathArgs,
+	}
+
+	// If the given URL is the server url it is valid but there is no need to perform a query for it, the entity
+	// ID of the server is always zero (by virtue of being the zero value for int).
+	if entityType == entity.TypeServer {
+		return entityRef, nil
+	}
+
+	// Get the statement corresponding to the entity type.
+	stmt, ok := entityIDFromURLStatements[entityType]
+	if !ok {
+		return nil, fmt.Errorf("Could not get entity ID from URL: No statement found for entity type %q", entityType)
+	}
+
+	// The first bind argument in all entityIDFromURL queries is an index that we use to correspond output of large UNION
+	// queries (see PopulateEntityReferencesFromURLs). In this case we are only querying for one ID, so the `0` argument
+	// is a placeholder.
+	args := []any{0, projectName, location}
+	for _, pathArg := range pathArgs {
+		args = append(args, pathArg)
+	}
+
+	row := tx.QueryRowContext(ctx, stmt, args...)
+
+	var rowID, entityID int
+	err = row.Scan(&rowID, &entityID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, api.StatusErrorf(http.StatusNotFound, "No such entity %q", entityURL.String())
+		}
+
+		return nil, fmt.Errorf("Failed to get entityID from URL: %w", err)
+	}
+
+	entityRef.EntityID = entityID
+
+	return entityRef, nil
+}
+
+var entityDeletionTriggers = map[entity.Type]string{
+	entity.TypeImage:                 imageDeletionTrigger,
+	entity.TypeProfile:               profileDeletionTrigger,
+	entity.TypeProject:               projectDeletionTrigger,
+	entity.TypeInstance:              instanceDeletionTrigger,
+	entity.TypeInstanceBackup:        instanceBackupDeletionTrigger,
+	entity.TypeInstanceSnapshot:      instanceSnapshotDeletionTrigger,
+	entity.TypeNetwork:               networkDeletionTrigger,
+	entity.TypeNetworkACL:            networkACLDeletionTrigger,
+	entity.TypeNode:                  nodeDeletionTrigger,
+	entity.TypeOperation:             operationDeletionTrigger,
+	entity.TypeStoragePool:           storagePoolDeletionTrigger,
+	entity.TypeStorageVolume:         storageVolumeDeletionTrigger,
+	entity.TypeStorageVolumeBackup:   storageVolumeBackupDeletionTrigger,
+	entity.TypeStorageVolumeSnapshot: storageVolumeSnapshotDeletionTrigger,
+	entity.TypeWarning:               warningDeletionTrigger,
+	entity.TypeClusterGroup:          clusterGroupDeletionTrigger,
+	entity.TypeStorageBucket:         storageBucketDeletionTrigger,
+	entity.TypeImageAlias:            imageAliasDeletionTrigger,
+	entity.TypeNetworkZone:           networkZoneDeletionTrigger,
+	entity.TypeAuthGroup:             authGroupDeletionTrigger,
+	entity.TypeIdentityProviderGroup: identityProviderGroupDeletionTrigger,
+	entity.TypeIdentity:              identityDeletionTrigger,
+}
+
+// imageDeletionTrigger deletes any permissions or warnings associated with an image when it is deleted.
+var imageDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_image_delete;
+CREATE TRIGGER on_image_delete
+	AFTER DELETE ON images
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeImage, entityTypeImage)
+
+// profileDeletionTrigger deletes any permissions or warnings associated with a profile when it is deleted.
+var profileDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_profile_delete;
+CREATE TRIGGER on_profile_delete
+	AFTER DELETE ON profiles
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeProfile, entityTypeProfile)
+
+// projectDeletionTrigger deletes any permissions or warnings associated with a project when it is deleted.
+var projectDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_project_delete;
+CREATE TRIGGER on_project_delete
+	AFTER DELETE ON projects
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeProject, entityTypeProject)
+
+// instanceDeletionTrigger deletes any permissions or warnings associated with an instance when it is deleted.
+var instanceDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_instance_delete;
+CREATE TRIGGER on_instance_delete
+	AFTER DELETE ON instances
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeInstance, entityTypeInstance)
+
+// instanceBackupDeletionTrigger deletes any permissions or warnings associated with an instance backup when it is deleted.
+var instanceBackupDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_instance_backup_delete;
+CREATE TRIGGER on_instance_backup_delete
+	AFTER DELETE ON instances_backups
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeInstanceBackup, entityTypeInstanceBackup)
+
+// instanceSnapshotDeletionTrigger deletes any permissions or warnings associated with an instance snapshot when it is deleted.
+var instanceSnapshotDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_instance_snaphot_delete;
+CREATE TRIGGER on_instance_snaphot_delete
+	AFTER DELETE ON instances_snapshots
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeInstanceSnapshot, entityTypeInstanceSnapshot)
+
+// networkDeletionTrigger deletes any permissions or warnings associated with a network when it is deleted.
+var networkDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_network_delete;
+CREATE TRIGGER on_network_delete
+	AFTER DELETE ON networks
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeNetwork, entityTypeNetwork)
+
+// networkACLDeletionTrigger deletes any permissions or warnings associated with a network ACL when it is deleted.
+var networkACLDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_network_acl_delete;
+CREATE TRIGGER on_network_acl_delete
+	AFTER DELETE ON networks_acls
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeNetworkACL, entityTypeNetworkACL)
+
+// nodeDeletionTrigger deletes any permissions or warnings associated with a node when it is deleted.
+var nodeDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_node_delete;
+CREATE TRIGGER on_node_delete
+	AFTER DELETE ON nodes
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeNode, entityTypeNode)
+
+// operationDeletionTrigger deletes any permissions or warnings associated with an operation when it is deleted.
+var operationDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_operation_delete;
+CREATE TRIGGER on_operation_delete
+	AFTER DELETE ON operations
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeOperation, entityTypeOperation)
+
+// storagePoolDeletionTrigger deletes any permissions or warnings associated with a storage pool when it is deleted.
+var storagePoolDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_storage_pool_delete;
+CREATE TRIGGER on_storage_pool_delete
+	AFTER DELETE ON storage_pools
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeStoragePool, entityTypeStoragePool)
+
+// storageVolumeDeletionTrigger deletes any permissions or warnings associated with a storage volume when it is deleted.
+var storageVolumeDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_storage_volume_delete;
+CREATE TRIGGER on_storage_volume_delete
+	AFTER DELETE ON storage_volumes
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeStorageVolume, entityTypeStorageVolume)
+
+// storageVolumeBackupDeletionTrigger deletes any permissions or warnings associated with a storage volume backup when it is deleted.
+var storageVolumeBackupDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_storage_volume_backup_delete;
+CREATE TRIGGER on_storage_volume_backup_delete
+	AFTER DELETE ON storage_volumes_backups
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeStorageVolumeBackup, entityTypeStorageVolumeBackup)
+
+// storageVolumeSnapshotDeletionTrigger deletes any permissions or warnings associated with a storage volume snapshot when it is deleted.
+var storageVolumeSnapshotDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_storage_volume_snapshot_delete;
+CREATE TRIGGER on_storage_volume_snapshot_delete
+	AFTER DELETE ON storage_volumes_snapshots
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeStorageVolumeSnapshot, entityTypeStorageVolumeSnapshot)
+
+// warningDeletionTrigger deletes any permissions associated with a warning when it is deleted.
+var warningDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_warning_delete;
+CREATE TRIGGER on_warning_delete
+	AFTER DELETE ON warnings
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	END
+`, entityTypeWarning)
+
+// clusterGroupDeletionTrigger deletes any permissions or warnings associated with a cluster group when it is deleted.
+var clusterGroupDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_cluster_group_delete;
+CREATE TRIGGER on_cluster_group_delete
+	AFTER DELETE ON cluster_groups
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeClusterGroup, entityTypeClusterGroup)
+
+// storageBucketDeletionTrigger deletes any permissions or warnings associated with a storage bucket when it is deleted.
+var storageBucketDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_storage_bucket_delete;
+CREATE TRIGGER on_storage_bucket_delete
+	AFTER DELETE ON storage_buckets
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeStorageBucket, entityTypeStorageBucket)
+
+// networkZoneDeletionTrigger deletes any permissions or warnings associated with a network zone when it is deleted.
+var networkZoneDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_network_zone_delete;
+CREATE TRIGGER on_network_zone_delete
+	AFTER DELETE ON networks_zones
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeNetworkZone, entityTypeNetworkZone)
+
+// imageAliasDeletionTrigger deletes any permissions or warnings associated with an image alias when it is deleted.
+var imageAliasDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_image_alias_delete;
+CREATE TRIGGER on_image_alias_delete
+	AFTER DELETE ON images_aliases
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeImageAlias, entityTypeImageAlias)
+
+// authGroupDeletionTrigger deletes any warnings associated with an auth group when it is deleted. Permissions are
+// related to auth groups via foreign key and will have already been deleted.
+var authGroupDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_auth_group_delete;
+CREATE TRIGGER on_auth_group_delete
+	AFTER DELETE ON auth_groups
+	BEGIN
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeAuthGroup)
+
+// identityProviderGroupDeletionTrigger deletes any permissions or warnings associated with an identity provider group when it is deleted.
+var identityProviderGroupDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_identity_provider_group_delete;
+CREATE TRIGGER on_identity_provider_group_delete
+	AFTER DELETE ON identity_provider_groups
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeIdentityProviderGroup, entityTypeIdentityProviderGroup)
+
+// identityDeletionTrigger deletes any permissions or warnings associated with an identity when it is deleted.
+var identityDeletionTrigger = fmt.Sprintf(`
+DROP TRIGGER IF EXISTS on_identity_delete;
+CREATE TRIGGER on_identity_delete
+	AFTER DELETE ON identities
+	BEGIN
+	DELETE FROM auth_groups_permissions 
+		WHERE entity_type = %d 
+		AND entity_id = OLD.id;
+	DELETE FROM warnings
+		WHERE entity_type_code = %d
+		AND entity_id = OLD.id;
+	END
+`, entityTypeIdentity, entityTypeIdentity)

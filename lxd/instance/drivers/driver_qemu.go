@@ -338,11 +338,6 @@ func qemuCreate(s *state.State, args db.InstanceArgs, p api.Project) (instance.I
 	if d.isSnapshot {
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceSnapshotCreated.Event(d, nil))
 	} else {
-		err = d.state.Authorizer.AddInstance(d.state.ShutdownCtx, d.project.Name, d.Name())
-		if err != nil {
-			logger.Error("Failed to add instance to authorizer", logger.Ctx{"name": d.Name(), "project": d.project.Name, "error": err})
-		}
-
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceCreated.Event(d, map[string]any{
 			"type":         api.InstanceTypeVM,
 			"storage-pool": d.storagePool.Name(),
@@ -1685,50 +1680,38 @@ func (d *qemu) start(stateful bool, op *operationlock.InstanceOperation) error {
 	// onStop hook isn't triggered prematurely (as this function's reverter will clean up on failure to start).
 	monitor.SetOnDisconnectEvent(false)
 
-	// Get the list of PIDs from the VM.
-	pids, err := monitor.GetCPUs()
-	if err != nil {
-		op.Done(err)
-		return err
-	}
-
-	err = d.setCoreSched(pids)
-	if err != nil {
-		err = fmt.Errorf("Failed to allocate new core scheduling domain for vCPU threads: %w", err)
-		op.Done(err)
-		return err
-	}
-
-	// Apply CPU pinning.
-	if cpuInfo.vcpus == nil {
-		if d.architectureSupportsCPUHotplug() && cpuInfo.cores > 1 {
-			err := d.setCPUs(cpuInfo.cores)
-			if err != nil {
-				err = fmt.Errorf("Failed to add CPUs: %w", err)
-				op.Done(err)
-				return err
-			}
+	// We need to hotplug vCPUs now if:
+	// - architecture supports hotplug
+	// - no explicit vCPU pinning was specified (cpuInfo.vcpus == nil)
+	// - we have more than one vCPU set
+	if d.architectureSupportsCPUHotplug() && cpuInfo.vcpus == nil && cpuInfo.cores > 1 {
+		// Setup CPUs and core scheduling for hotpluggable CPU systems.
+		err := d.setCPUs(cpuInfo.cores)
+		if err != nil {
+			err = fmt.Errorf("Failed to add CPUs: %w", err)
+			op.Done(err)
+			return err
 		}
 	} else {
-		// Confirm nothing weird is going on.
-		if len(cpuInfo.vcpus) != len(pids) {
-			err = fmt.Errorf("QEMU has less vCPUs than configured")
+		// Setup just core scheduling if we don't need to hotplug vCPUs
+
+		// Get the list of PIDs from the VM.
+		pids, err := monitor.GetCPUs()
+		if err != nil {
 			op.Done(err)
 			return err
 		}
 
-		for i, pid := range pids {
-			set := unix.CPUSet{}
-			set.Set(int(cpuInfo.vcpus[uint64(i)]))
-
-			// Apply the pin.
-			err := unix.SchedSetaffinity(pid, &set)
-			if err != nil {
-				op.Done(err)
-				return err
-			}
+		err = d.setCoreSched(pids)
+		if err != nil {
+			err = fmt.Errorf("Failed to allocate new core scheduling domain for vCPU threads: %w", err)
+			op.Done(err)
+			return err
 		}
 	}
+
+	// Trigger a rebalance procedure which will set vCPU affinity (pinning) (explicit or implicit)
+	cgroup.TaskSchedulerTrigger("virtual-machine", d.name, "started")
 
 	// Run monitor hooks from devices.
 	for _, monHook := range monHooks {
@@ -2806,7 +2789,7 @@ fail() {
 # Setup the mount target.
 umount -l "${PREFIX}" >/dev/null 2>&1 || true
 mkdir -p "${PREFIX}"
-mount -t tmpfs tmpfs "${PREFIX}" -o mode=0700,nodev,nosuid,noatime,size=25M
+mount -t tmpfs tmpfs "${PREFIX}" -o mode=0700,nodev,nosuid,noatime,size=50M
 mkdir -p "${PREFIX}/.mnt"
 
 # Try virtiofs first.
@@ -3584,6 +3567,9 @@ func (d *qemu) addCPUMemoryConfig(cfg *[]cfgSection, cpuInfo *cpuTopology) error
 		if d.architectureSupportsCPUHotplug() {
 			cpuOpts.cpuCount = 1
 			cpuOpts.cpuCores = 1
+
+			// Expose the total requested by the user already so the hotplug limit can be set higher if needed.
+			cpuOpts.cpuRequested = cpuInfo.cores
 		} else {
 			cpuOpts.cpuCount = cpuInfo.cores
 			cpuOpts.cpuCores = cpuInfo.cores
@@ -3887,9 +3873,11 @@ func (d *qemu) addDriveConfig(qemuDev map[string]string, bootIndexes map[string]
 			} else {
 				// Use host cache, with neither O_DSYNC nor O_DIRECT semantics if filesystem
 				// doesn't support Direct I/O.
-				_, err := os.OpenFile(srcDevPath, unix.O_DIRECT|unix.O_RDONLY, 0)
+				f, err := os.OpenFile(srcDevPath, unix.O_DIRECT|unix.O_RDONLY, 0)
 				if err != nil {
 					cacheMode = "writeback"
+				} else {
+					_ = f.Close() // Don't leak FD.
 				}
 			}
 
@@ -4152,6 +4140,13 @@ func (d *qemu) addDriveConfig(qemuDev map[string]string, bootIndexes map[string]
 		err := m.AddBlockDevice(blockDev, qemuDev)
 		if err != nil {
 			return fmt.Errorf("Failed adding block device for disk device %q: %w", driveConf.DevName, err)
+		}
+
+		if driveConf.Limits != nil {
+			err = m.SetBlockThrottle(qemuDev["id"], int(driveConf.Limits.ReadBytes), int(driveConf.Limits.WriteBytes), int(driveConf.Limits.ReadIOps), int(driveConf.Limits.WriteIOps))
+			if err != nil {
+				return fmt.Errorf("Failed applying limits for disk device %q: %w", driveConf.DevName, err)
+			}
 		}
 
 		revert.Success()
@@ -4923,6 +4918,9 @@ func (d *qemu) Stop(stateful bool) error {
 		return err
 	}
 
+	// Trigger a rebalance
+	cgroup.TaskSchedulerTrigger("virtual-machine", d.name, "stopped")
+
 	return nil
 }
 
@@ -5308,11 +5306,6 @@ func (d *qemu) Rename(newName string, applyTemplateTrigger bool) error {
 	if d.isSnapshot {
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceSnapshotRenamed.Event(d, map[string]any{"old_name": oldName}))
 	} else {
-		err = d.state.Authorizer.RenameInstance(d.state.ShutdownCtx, d.project.Name, oldName, newName)
-		if err != nil {
-			logger.Error("Failed to rename instance in authorizer", logger.Ctx{"old_name": oldName, "new_name": newName, "project": d.project.Name, "error": err})
-		}
-
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceRenamed.Event(d, map[string]any{"old_name": oldName}))
 	}
 
@@ -5589,6 +5582,8 @@ func (d *qemu) Update(args db.InstanceArgs, userRequested bool) error {
 		return err
 	}
 
+	cpuLimitWasChanged := false
+
 	if isRunning {
 		// Only certain keys can be changed on a running VM.
 		liveUpdateKeys := []string{
@@ -5667,6 +5662,8 @@ func (d *qemu) Update(args db.InstanceArgs, userRequested bool) error {
 				if err != nil {
 					return fmt.Errorf("Failed updating cpu limit: %w", err)
 				}
+
+				cpuLimitWasChanged = true
 			} else if key == "limits.memory" {
 				err = d.updateMemoryLimit(value)
 				if err != nil {
@@ -5789,6 +5786,11 @@ func (d *qemu) Update(args db.InstanceArgs, userRequested bool) error {
 
 	// Changes have been applied and recorded, do not revert if an error occurs from here.
 	revert.Success()
+
+	if cpuLimitWasChanged {
+		// Trigger a scheduler re-run
+		cgroup.TaskSchedulerTrigger("virtual-machine", d.name, "changed")
+	}
 
 	if isRunning {
 		// Send devlxd notifications only for user.* key changes
@@ -6208,11 +6210,6 @@ func (d *qemu) delete(force bool) error {
 	if d.isSnapshot {
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceSnapshotDeleted.Event(d, nil))
 	} else {
-		err = d.state.Authorizer.DeleteInstance(d.state.ShutdownCtx, d.project.Name, d.Name())
-		if err != nil {
-			logger.Error("Failed to remove instance from authorizer", logger.Ctx{"name": d.Name(), "project": d.project.Name, "error": err})
-		}
-
 		d.state.Events.SendLifecycle(d.project.Name, lifecycle.InstanceDeleted.Event(d, nil))
 	}
 
@@ -6848,6 +6845,17 @@ func (d *qemu) migrateSendLive(pool storagePools.Pool, clusterMoveSourceName str
 		defer revert.Fail() // Run the revert fail before the earlier defers.
 
 		d.logger.Debug("Setup temporary migration storage snapshot")
+	} else {
+		// Still set some options for shared storage.
+		capabilities := map[string]bool{
+			// Automatically throttle down the guest to speed up convergence of RAM migration.
+			"auto-converge": true,
+		}
+
+		err = monitor.MigrateSetCapabilities(capabilities)
+		if err != nil {
+			return fmt.Errorf("Failed setting migration capabilities: %w", err)
+		}
 	}
 
 	// Perform storage transfer while instance is still running.
@@ -7253,11 +7261,9 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 
 			architectureName, _ := osarch.ArchitectureName(d.Architecture())
 			apiInstSnap := &api.InstanceSnapshot{
-				InstanceSnapshotPut: api.InstanceSnapshotPut{
-					ExpiresAt: time.Time{},
-				},
 				Architecture: architectureName,
 				CreatedAt:    d.CreationDate(),
+				ExpiresAt:    time.Time{},
 				LastUsedAt:   d.LastUsedDate(),
 				Config:       d.LocalConfig(),
 				Devices:      d.LocalDevices().CloneNative(),
@@ -7304,7 +7310,7 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 
 		// A zero length Snapshots slice indicates volume only migration in
 		// VolumeTargetArgs. So if VolumeOnly was requested, do not populate them.
-		snapOps := []operationlock.InstanceOperation{}
+		snapOps := []*operationlock.InstanceOperation{}
 		if args.Snapshots {
 			volTargetArgs.Snapshots = make([]string, 0, len(snapshots))
 			for _, snap := range snapshots {
@@ -7340,7 +7346,7 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 						snapInstOp.Done(err)
 					})
 
-					snapOps = append(snapOps, *snapInstOp)
+					snapOps = append(snapOps, snapInstOp)
 				}
 			}
 		}
@@ -7456,6 +7462,41 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 // CGroup is not implemented for VMs.
 func (d *qemu) CGroup() (*cgroup.CGroup, error) {
 	return nil, instance.ErrNotImplemented
+}
+
+// SetAffinity sets affinity for QEMU processes according with a set provided.
+func (d *qemu) SetAffinity(set []string) error {
+	monitor, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+	if err != nil {
+		// this is not an error path, really. Instance can be stopped, for example.
+		d.logger.Debug("Failed connecting to the QMP monitor. Instance is not running?", logger.Ctx{"name": d.Name(), "err": err})
+		return nil
+	}
+
+	// Get the list of PIDs from the VM.
+	pids, err := monitor.GetCPUs()
+	if err != nil {
+		return fmt.Errorf("Failed to get VM instance's QEMU process list: %w", err)
+	}
+
+	// Confirm nothing weird is going on.
+	if len(set) != len(pids) {
+		return fmt.Errorf("QEMU has different count of vCPUs (%v) than configured (%v)", pids, set)
+	}
+
+	for i, pid := range pids {
+		affinitySet := unix.CPUSet{}
+		cpuCoreIndex, _ := strconv.Atoi(set[i])
+		affinitySet.Set(cpuCoreIndex)
+
+		// Apply the pin.
+		err := unix.SchedSetaffinity(pid, &affinitySet)
+		if err != nil {
+			return fmt.Errorf("Failed to set QEMU process affinity: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // FileSFTPConn returns a connection to the agent SFTP endpoint.
@@ -7944,47 +7985,67 @@ func (d *qemu) LockExclusive() (*operationlock.InstanceOperation, error) {
 
 // DeviceEventHandler handles events occurring on the instance's devices.
 func (d *qemu) DeviceEventHandler(runConf *deviceConfig.RunConfig) error {
-	if !d.IsRunning() {
+	if !d.IsRunning() || runConf == nil {
 		return nil
 	}
 
-	if runConf == nil || len(runConf.Uevents) == 0 {
-		return nil
+	// Handle uevents.
+	for _, uevent := range runConf.Uevents {
+		for _, event := range uevent {
+			fields := strings.SplitN(event, "=", 2)
+
+			if fields[0] != "ACTION" {
+				continue
+			}
+
+			switch fields[1] {
+			case "add":
+				for _, usbDev := range runConf.USBDevice {
+					// This ensures that the device is actually removed from QEMU before adding it again.
+					// In most cases the device will already be removed, but it is possible that the
+					// device still exists in QEMU before trying to add it again.
+					// If a USB device is physically detached from a running VM while the server
+					// itself is stopped, QEMU in theory will not delete the device.
+					err := d.deviceDetachUSB(usbDev)
+					if err != nil {
+						return err
+					}
+
+					err = d.deviceAttachUSB(usbDev)
+					if err != nil {
+						return err
+					}
+				}
+			case "remove":
+				for _, usbDev := range runConf.USBDevice {
+					err := d.deviceDetachUSB(usbDev)
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
 	}
 
-	// Uevents will contain 1 entry at most, therefore we don't need to iterate through it.
-	for _, event := range runConf.Uevents[0] {
-		fields := strings.SplitN(event, "=", 2)
-
-		if fields[0] != "ACTION" {
+	// Handle disk reconfiguration.
+	for _, mount := range runConf.Mounts {
+		if mount.Limits == nil {
 			continue
 		}
 
-		switch fields[1] {
-		case "add":
-			for _, usbDev := range runConf.USBDevice {
-				// This ensures that the device is actually removed from QEMU before adding it again.
-				// In most cases the device will already be removed, but it is possible that the
-				// device still exists in QEMU before trying to add it again.
-				// If a USB device is physically detached from a running VM while the LXD server
-				// itself is stopped, QEMU in theory will not delete the device.
-				err := d.deviceDetachUSB(usbDev)
-				if err != nil {
-					return err
-				}
+		// Get the QMP monitor.
+		m, err := qmp.Connect(d.monitorPath(), qemuSerialChardevName, d.getMonitorEventHandler())
+		if err != nil {
+			return err
+		}
 
-				err = d.deviceAttachUSB(usbDev)
-				if err != nil {
-					return err
-				}
-			}
-		case "remove":
-			for _, usbDev := range runConf.USBDevice {
-				err := d.deviceDetachUSB(usbDev)
-				if err != nil {
-					return err
-				}
-			}
+		// Figure out the QEMU device ID.
+		devID := fmt.Sprintf("%s%s", qemuDeviceIDPrefix, filesystem.PathNameEncode(mount.DevName))
+
+		// Apply the limits.
+		err = m.SetBlockThrottle(devID, int(mount.Limits.ReadBytes), int(mount.Limits.WriteBytes), int(mount.Limits.ReadIOps), int(mount.Limits.WriteIOps))
+		if err != nil {
+			return fmt.Errorf("Failed applying limits for disk device %q: %w", mount.DevName, err)
 		}
 	}
 
@@ -8030,7 +8091,7 @@ func (d *qemu) acquireVsockID(vsockID uint32) (*os.File, error) {
 	revert.Add(func() { _ = vsockF.Close() })
 
 	// The vsock Context ID cannot be supplied as type uint32.
-	vsockIDInt := int(vsockID)
+	vsockIDInt := uint64(vsockID)
 
 	// 0x4008AF60 = VHOST_VSOCK_SET_GUEST_CID = _IOW(VHOST_VIRTIO, 0x60, __u64)
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, vsockF.Fd(), 0x4008AF60, uintptr(unsafe.Pointer(&vsockIDInt)))
@@ -8961,6 +9022,33 @@ func (d *qemu) setCPUs(count int) error {
 				d.logger.Warn("Failed to add CPU device", logger.Ctx{"err": err})
 			})
 		}
+	}
+
+	var pids []int
+	cpusWereSeen := false
+	for i := 0; i < 50; i++ {
+		// Get the list of PIDs from the VM.
+		pids, err = monitor.GetCPUs()
+		if err != nil {
+			return fmt.Errorf("Failed to get VM instance's QEMU process list: %w", err)
+		}
+
+		if count == len(pids) {
+			cpusWereSeen = true
+			break
+		}
+
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if !cpusWereSeen {
+		return fmt.Errorf("Failed to wait until all vCPUs (%d) come online", count)
+	}
+
+	// actualize core scheduling data
+	err = d.setCoreSched(pids)
+	if err != nil {
+		return fmt.Errorf("Failed to allocate new core scheduling domain for vCPU threads: %w", err)
 	}
 
 	revert.Success()

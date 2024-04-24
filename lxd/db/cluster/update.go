@@ -107,6 +107,100 @@ var updates = map[int]schema.Update{
 	68: updateFromV67,
 	69: updateFromV68,
 	70: updateFromV69,
+	71: updateFromV70,
+	72: updateFromV71,
+	73: updateFromV72,
+}
+
+func updateFromV72(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+DROP TABLE permissions;
+DROP TABLE auth_groups_permissions;
+CREATE TABLE auth_groups_permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    auth_group_id INTEGER NOT NULL,
+    entity_type INTEGER NOT NULL,
+    entity_id INTEGER NOT NULL,
+    entitlement TEXT NOT NULL,
+    FOREIGN KEY (auth_group_id) REFERENCES auth_groups (id) ON DELETE CASCADE,
+    UNIQUE (auth_group_id, entity_type, entitlement, entity_id)
+);
+`)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func updateFromV71(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `
+ALTER TABLE identities ADD COLUMN first_seen_date DATETIME NOT NULL DEFAULT "0001-01-01T00:00:00Z";
+ALTER TABLE identities ADD COLUMN last_seen_date DATETIME NOT NULL DEFAULT "0001-01-01T00:00:00Z";
+ALTER TABLE identities ADD COLUMN updated_date DATETIME NOT NULL DEFAULT "0001-01-01T00:00:00Z";
+`)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func updateFromV70(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.Exec(`
+CREATE TABLE auth_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    UNIQUE (name)
+);
+
+CREATE TABLE identities_auth_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    identity_id INTEGER NOT NULL,
+    auth_group_id INTEGER NOT NULL,
+    FOREIGN KEY (identity_id) REFERENCES identities (id) ON DELETE CASCADE,
+    FOREIGN KEY (auth_group_id) REFERENCES auth_groups (id) ON DELETE CASCADE,
+    UNIQUE (identity_id, auth_group_id)
+);
+
+CREATE TABLE identity_provider_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    name TEXT NOT NULL,
+    UNIQUE (name)
+);
+
+CREATE TABLE auth_groups_identity_provider_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    auth_group_id INTEGER NOT NULL,
+    identity_provider_group_id INTEGER NOT NULL,
+    FOREIGN KEY (auth_group_id) REFERENCES auth_groups (id) ON DELETE CASCADE,
+    FOREIGN KEY (identity_provider_group_id) REFERENCES identity_provider_groups (id) ON DELETE CASCADE,
+    UNIQUE (auth_group_id, identity_provider_group_id)
+);
+
+CREATE TABLE permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    entitlement TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    entity_id INTEGER NOT NULL,
+    UNIQUE (entitlement, entity_type, entity_id)
+);
+
+CREATE TABLE auth_groups_permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    auth_group_id INTEGER NOT NULL,
+    permission_id INTEGER NOT NULL,
+    FOREIGN KEY (auth_group_id) REFERENCES auth_groups (id) ON DELETE CASCADE,
+    FOREIGN KEY (permission_id) REFERENCES permissions (id) ON DELETE CASCADE,
+    UNIQUE (auth_group_id, permission_id)
+);
+`)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func updateFromV69(ctx context.Context, tx *sql.Tx) error {
@@ -134,7 +228,8 @@ CREATE TABLE identities_projects (
 INSERT INTO identities (id, auth_method, type, identifier, name, metadata) SELECT id, 1, 1, fingerprint, name, json_object('cert', certificate) FROM certificates WHERE type = 1 AND restricted = 1;
 INSERT INTO identities (id, auth_method, type, identifier, name, metadata) SELECT id, 1, 2, fingerprint, name, json_object('cert', certificate) FROM certificates WHERE type = 1 AND restricted = 0;
 INSERT INTO identities (id, auth_method, type, identifier, name, metadata) SELECT id, 1, 3, fingerprint, name, json_object('cert', certificate) FROM certificates WHERE type = 2;
-INSERT INTO identities (id, auth_method, type, identifier, name, metadata) SELECT id, 1, 4, fingerprint, name, json_object('cert', certificate) FROM certificates WHERE type = 3;
+INSERT INTO identities (id, auth_method, type, identifier, name, metadata) SELECT id, 1, 4, fingerprint, name, json_object('cert', certificate) FROM certificates WHERE type = 3 AND restricted = 1;
+INSERT INTO identities (id, auth_method, type, identifier, name, metadata) SELECT id, 1, 6, fingerprint, name, json_object('cert', certificate) FROM certificates WHERE type = 3 AND restricted = 0;
 INSERT INTO identities_projects (identity_id, project_id) SELECT certificate_id, project_id FROM certificates_projects;
 
 DROP TABLE certificates;

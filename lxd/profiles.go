@@ -158,7 +158,8 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 		return response.InternalError(err)
 	}
 
-	var result any
+	var apiProfiles []*api.Profile
+	var profileURLs []string
 	err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
 		filter := dbCluster.ProfileFilter{
 			Project: &p.Name,
@@ -169,35 +170,33 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 			return err
 		}
 
-		apiProfiles := make([]*api.Profile, 0, len(profiles))
-		for _, profile := range profiles {
-			if !userHasPermission(entity.ProfileURL(p.Name, profile.Name)) {
-				continue
-			}
-
-			apiProfile, err := profile.ToAPI(ctx, tx.Tx())
-			if err != nil {
-				return err
-			}
-
-			apiProfile.UsedBy, err = profileUsedBy(ctx, tx, profile)
-			if err != nil {
-				return err
-			}
-
-			apiProfile.UsedBy = project.FilterUsedBy(s.Authorizer, r, apiProfile.UsedBy)
-			apiProfiles = append(apiProfiles, apiProfile)
-		}
-
 		if recursion {
-			result = apiProfiles
-		} else {
-			urls := make([]string, len(apiProfiles))
-			for i, apiProfile := range apiProfiles {
-				urls[i] = apiProfile.URL(version.APIVersion, p.Name).String()
-			}
+			apiProfiles = make([]*api.Profile, 0, len(profiles))
+			for _, profile := range profiles {
+				if !userHasPermission(entity.ProfileURL(p.Name, profile.Name)) {
+					continue
+				}
 
-			result = urls
+				apiProfile, err := profile.ToAPI(ctx, tx.Tx())
+				if err != nil {
+					return err
+				}
+
+				apiProfile.UsedBy, err = profileUsedBy(ctx, tx, profile)
+				if err != nil {
+					return err
+				}
+
+				apiProfiles = append(apiProfiles, apiProfile)
+			}
+		} else {
+			profileURLs = make([]string, 0, len(profiles))
+			for _, profile := range profiles {
+				profileURL := entity.ProfileURL(p.Name, profile.Name)
+				if userHasPermission(profileURL) {
+					profileURLs = append(profileURLs, profileURL.String())
+				}
+			}
 		}
 
 		return err
@@ -206,7 +205,15 @@ func profilesGet(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	return response.SyncResponse(true, result)
+	if !recursion {
+		return response.SyncResponse(true, profileURLs)
+	}
+
+	for _, apiProfile := range apiProfiles {
+		apiProfile.UsedBy = project.FilterUsedBy(s.Authorizer, r, apiProfile.UsedBy)
+	}
+
+	return response.SyncResponse(true, apiProfiles)
 }
 
 // profileUsedBy returns all the instance URLs that are using the given profile.
@@ -334,11 +341,6 @@ func profilesPost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(fmt.Errorf("Error inserting %q into database: %w", req.Name, err))
 	}
 
-	err = s.Authorizer.AddProfile(r.Context(), p.Name, req.Name)
-	if err != nil {
-		logger.Error("Failed to add profile to authorizer", logger.Ctx{"name": req.Name, "project": p.Name, "error": err})
-	}
-
 	requestor := request.CreateRequestor(r)
 	lc := lifecycle.ProfileCreated.Event(req.Name, p.Name, requestor, nil)
 	s.Events.SendLifecycle(p.Name, lc)
@@ -417,13 +419,13 @@ func profileGet(d *Daemon, r *http.Request) response.Response {
 			return err
 		}
 
-		resp.UsedBy = project.FilterUsedBy(s.Authorizer, r, resp.UsedBy)
-
 		return nil
 	})
 	if err != nil {
 		return response.SmartError(err)
 	}
+
+	resp.UsedBy = project.FilterUsedBy(s.Authorizer, r, resp.UsedBy)
 
 	etag := []any{resp.Config, resp.Description, resp.Devices}
 	return response.SyncResponseETag(true, resp, etag)
@@ -534,7 +536,7 @@ func profilePut(d *Daemon, r *http.Request) response.Response {
 		}
 
 		err = notifier(func(client lxd.InstanceServer) error {
-			return client.UseProject(p.Name).UpdateProfile(name, profile.ProfilePut, "")
+			return client.UseProject(p.Name).UpdateProfile(name, profile.Writable(), "")
 		})
 		if err != nil {
 			return response.SmartError(err)
@@ -760,11 +762,6 @@ func profilePost(d *Daemon, r *http.Request) response.Response {
 		return response.SmartError(err)
 	}
 
-	err = s.Authorizer.RenameProfile(r.Context(), p.Name, name, req.Name)
-	if err != nil {
-		logger.Error("Failed to rename profile in authorizer", logger.Ctx{"old_name": name, "new_name": req.Name, "project": p.Name, "error": err})
-	}
-
 	requestor := request.CreateRequestor(r)
 	lc := lifecycle.ProfileRenamed.Event(req.Name, p.Name, requestor, logger.Ctx{"old_name": name})
 	s.Events.SendLifecycle(p.Name, lc)
@@ -832,11 +829,6 @@ func profileDelete(d *Daemon, r *http.Request) response.Response {
 	})
 	if err != nil {
 		return response.SmartError(err)
-	}
-
-	err = s.Authorizer.DeleteProfile(r.Context(), p.Name, name)
-	if err != nil {
-		logger.Error("Failed to remove profile from authorizer", logger.Ctx{"name": name, "project": p.Name, "error": err})
 	}
 
 	requestor := request.CreateRequestor(r)

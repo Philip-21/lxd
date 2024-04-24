@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -62,6 +60,7 @@ var apiInternal = []APIEndpoint{
 	internalShutdownCmd,
 	internalSQLCmd,
 	internalWarningCreateCmd,
+	internalIdentityCacheRefreshCmd,
 }
 
 var internalShutdownCmd = APIEndpoint{
@@ -137,6 +136,12 @@ var internalBGPStateCmd = APIEndpoint{
 	Get: APIEndpointAction{Handler: internalBGPState, AccessHandler: allowPermission(entity.TypeServer, auth.EntitlementCanEdit)},
 }
 
+var internalIdentityCacheRefreshCmd = APIEndpoint{
+	Path: "identity-cache-refresh",
+
+	Post: APIEndpointAction{Handler: internalIdentityCacheRefresh, AccessHandler: allowPermission(entity.TypeServer, auth.EntitlementCanEdit)},
+}
+
 type internalImageOptimizePost struct {
 	Image api.Image `json:"image" yaml:"image"`
 	Pool  string    `json:"pool"  yaml:"pool"`
@@ -153,32 +158,14 @@ type internalWarningCreatePost struct {
 
 // internalCreateWarning creates a warning, and is used for testing only.
 func internalCreateWarning(d *Daemon, r *http.Request) response.Response {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		return response.InternalError(err)
-	}
-
-	rdr1 := io.NopCloser(bytes.NewBuffer(body))
-	rdr2 := io.NopCloser(bytes.NewBuffer(body))
-
-	reqRaw := shared.Jmap{}
-	err = json.NewDecoder(rdr1).Decode(&reqRaw)
-	if err != nil {
-		return response.BadRequest(err)
-	}
-
 	req := internalWarningCreatePost{}
-	err = json.NewDecoder(rdr2).Decode(&req)
+	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
 		return response.BadRequest(err)
 	}
-
-	entityTypeStr, _ := reqRaw.GetString("entity_type")
-	req.EntityID, _ = reqRaw.GetInt("entity_id")
 
 	// If entity type is set, check it is valid and fail if it isn't.
-	if entityTypeStr != "" {
-		req.EntityType = entity.Type(entityTypeStr)
+	if req.EntityType != "" {
 		err = req.EntityType.Validate()
 		if err != nil {
 			return response.BadRequest(fmt.Errorf("Invalid entity type: %w", err))
@@ -784,28 +771,12 @@ func internalImportFromBackup(s *state.State, projectName string, instName strin
 
 	// Apply device overrides.
 	// Do this before calling internalImportRootDevicePopulate so that device overrides are taken into account.
-	for deviceName := range deviceOverrides {
-		_, isLocalDevice := backupConf.Container.Devices[deviceName]
-		if isLocalDevice {
-			// Apply overrides to local device.
-			for k, v := range deviceOverrides[deviceName] {
-				backupConf.Container.Devices[deviceName][k] = v
-			}
-		} else {
-			// Check device exists in expanded profile devices.
-			profileDeviceConfig, found := backupConf.Container.ExpandedDevices[deviceName]
-			if !found {
-				return fmt.Errorf("Cannot override config for device %q: Device not found in profile devices", deviceName)
-			}
-
-			for k, v := range deviceOverrides[deviceName] {
-				profileDeviceConfig[k] = v
-			}
-
-			// Add device to local devices.
-			backupConf.Container.Devices[deviceName] = profileDeviceConfig
-		}
+	resultingDevices, err := shared.ApplyDeviceOverrides(backupConf.Container.Devices, backupConf.Container.ExpandedDevices, deviceOverrides)
+	if err != nil {
+		return err
 	}
+
+	backupConf.Container.Devices = resultingDevices
 
 	// Add root device if needed.
 	// And ensure root device is associated with same pool as instance has been imported to.
@@ -876,24 +847,6 @@ func internalImportFromBackup(s *state.State, projectName string, instName strin
 		// If a storage volume entry exists only proceed if force was specified.
 		if dbVolume != nil {
 			return fmt.Errorf(`Storage volume for snapshot %q already exists in the database`, snapInstName)
-		}
-
-		if snapErr == nil {
-			err := s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-				return tx.DeleteInstance(ctx, projectName, snapInstName)
-			})
-			if err != nil {
-				return err
-			}
-		}
-
-		if dbVolume != nil {
-			err := s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-				return tx.RemoveStoragePoolVolume(ctx, projectName, snapInstName, instanceDBVolType, pool.ID())
-			})
-			if err != nil {
-				return err
-			}
 		}
 
 		baseImage := snap.Config["volatile.base_image"]
@@ -1082,4 +1035,10 @@ func internalBGPState(d *Daemon, r *http.Request) response.Response {
 	s := d.State()
 
 	return response.SyncResponse(true, s.BGP.Debug())
+}
+
+func internalIdentityCacheRefresh(d *Daemon, r *http.Request) response.Response {
+	logger.Debug("Received identity cache update notification - refreshing cache")
+	d.State().UpdateIdentityCache()
+	return response.EmptySyncResponse
 }

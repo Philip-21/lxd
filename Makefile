@@ -11,6 +11,7 @@ GOPATH ?= $(shell go env GOPATH)
 CGO_LDFLAGS_ALLOW ?= (-Wl,-wrap,pthread_create)|(-Wl,-z,now)
 SPHINXENV=doc/.sphinx/venv/bin/activate
 SPHINXPIPPATH=doc/.sphinx/venv/bin/pip
+GOMIN=1.22.0
 
 ifneq "$(wildcard vendor)" ""
 	RAFT_PATH=$(CURDIR)/vendor/raft
@@ -92,12 +93,13 @@ ifneq "$(LXD_OFFLINE)" ""
 	exit 1
 endif
 	go get -t -v -d -u ./...
-	go get github.com/mdlayher/socket@v0.4.1
-	go mod tidy --go=1.20
+	go mod tidy -go=$(GOMIN)
 	go get toolchain@none
 
 	cd test/mini-oidc && go get -t -v -d -u ./...
-	cd test/mini-oidc && go mod tidy --go=1.20
+	cd test/mini-oidc && go mod tidy -go=$(GOMIN)
+	cd test/mini-oidc && go get toolchain@none
+
 	@echo "Dependencies updated"
 
 .PHONY: update-protobuf
@@ -117,7 +119,9 @@ update-api:
 ifeq "$(LXD_OFFLINE)" ""
 	(cd / ; go install github.com/go-swagger/go-swagger/cmd/swagger@latest)
 endif
-	swagger generate spec -o doc/rest-api.yaml -w ./lxd -m
+	@# Generate spec and exclude package from dependency which causes a 'classifier: unknown swagger annotation "extendee"' error.
+	@# For more details see: https://github.com/go-swagger/go-swagger/issues/2917.
+	swagger generate spec -o doc/rest-api.yaml -w ./lxd -m -x github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2/options
 
 .PHONY: update-metadata
 update-metadata: build
@@ -128,6 +132,9 @@ update-metadata: build
 doc-setup: client
 	@echo "Setting up documentation build environment"
 	python3 -m venv doc/.sphinx/venv
+	# Workaround for https://github.com/canonical/sphinx-docs-starter-pack/issues/197
+	. $(SPHINXENV) ; pip install --require-virtualenv gitpython pyyaml
+	. $(SPHINXENV) ; cd doc && LOCAL_SPHINX_BUILD=True python3 .sphinx/build_requirements.py
 	. $(SPHINXENV) ; pip install --require-virtualenv --upgrade -r doc/.sphinx/requirements.txt --log doc/.sphinx/venv/pip_install.log
 	@test ! -f doc/.sphinx/venv/pip_list.txt || \
         mv doc/.sphinx/venv/pip_list.txt doc/.sphinx/venv/pip_list.txt.bak
@@ -295,8 +302,18 @@ ifeq ($(shell command -v flake8),)
 	exit 1
 endif
 	flake8 test/deps/import-busybox
-	shellcheck --shell sh test/*.sh test/includes/*.sh test/suites/*.sh test/backends/*.sh test/lint/*.sh
+	shellcheck --shell bash test/*.sh test/includes/*.sh test/suites/*.sh test/backends/*.sh test/lint/*.sh
 	shellcheck test/extras/*.sh
+	NOT_EXEC="$(shell find test/lint -type f -not -executable)"; \
+	if [ -n "$$NOT_EXEC" ]; then \
+        echo "lint scripts not executable: $$NOT_EXEC"; \
+        exit 1; \
+	fi
+	BAD_NAME="$(shell find test/lint -type f -not -name '*.sh')"; \
+	if [ -n "$$BAD_NAME" ]; then \
+        echo "lint scripts missing .sh extension: $$BAD_NAME"; \
+        exit 1; \
+	fi
 	run-parts --verbose --exit-on-error --regex '.sh' test/lint
 
 .PHONY: staticcheck
@@ -313,3 +330,7 @@ endif
 
 tags: */*.go
 	find . -type f -name '*.go' | gotags -L - -f tags
+
+.PHONY: update-auth
+update-auth:
+	go generate ./lxd/auth

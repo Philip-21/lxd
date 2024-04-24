@@ -7,16 +7,38 @@ relatedlinks: https://www.youtube.com/watch?v=QyXOOE_4cm0
 
 To get started with LXD, see the documentation in this section.
 
+```{only} diataxis
+How to install and initialize LXD:
+```
+
 ```{filtered-toctree}
 :maxdepth: 1
 
-:diataxis:Access the documentation </howto/access_documentation>
-:diataxis:Access the UI </howto/access_ui>
-:diataxis:Contribute to LXD </contributing>
-:diataxis:Get support </support>
-:diataxis:Initialize LXD </howto/initialize>
 :diataxis:Install LXD </installing>
+:diataxis:Initialize LXD </howto/initialize>
 :diataxis:Manage the snap </howto/snap>
+```
+
+```{only} diataxis
+How to enable access to the UI and the documentation:
+```
+
+```{filtered-toctree}
+:maxdepth: 1
+
+:diataxis:Access the UI </howto/access_ui>
+:diataxis:Access documentation </howto/access_documentation>
+```
+
+```{only} diataxis
+How to get support and contribute:
+```
+
+```{filtered-toctree}
+:maxdepth: 1
+
+:diataxis:Get support </support>
+:diataxis:Contribute to LXD </contributing>
 ```
 
 In addition, the following clip gives a quick and easy introduction for standard use cases:
@@ -43,7 +65,7 @@ You can also find a series of demos and tutorials on YouTube:
 :maxdepth: 1
 
 :topical:/tutorial/first_steps
-:topical:/explanation/containers_and_vms
+:topical:/explanation/instances
 :topical:/requirements
 :topical:Install LXD </installing>
 :topical:Initialize LXD </howto/initialize>

@@ -4,7 +4,7 @@
 (requirements-go)=
 ## Go
 
-LXD requires Go 1.21 or higher and is only tested with the Golang compiler.
+LXD requires Go 1.22.0 or higher and is only tested with the Golang compiler.
 
 We recommend having at least 2GiB of RAM to allow the build to complete.
 
@@ -29,6 +29,7 @@ The following optional features also require extra kernel options or newer versi
 
 As well as any other kernel feature required by the LXC version in use.
 
+(requirements-lxc)=
 ## LXC
 
 LXD requires LXC 5.0.0 or higher with the following build options:
@@ -44,6 +45,7 @@ should also be installed.
 For virtual machines, QEMU 6.2 or higher is required. Some features like
 Confidential Guest support require a more recent QEMU and kernel version.
 
+(requirements-zfs)=
 ## ZFS
 
 For the ZFS storage driver, ZFS 2.1 or higher is required. Some features

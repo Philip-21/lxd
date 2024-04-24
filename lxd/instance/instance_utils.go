@@ -50,24 +50,6 @@ var Load func(s *state.State, args db.InstanceArgs, p api.Project) (Instance, er
 // Returns a revert fail function that can be used to undo this function if a subsequent step fails.
 var Create func(s *state.State, args db.InstanceArgs, p api.Project) (Instance, revert.Hook, error)
 
-func exclusiveConfigKeys(key1 string, key2 string, config map[string]string) (val string, ok bool, err error) {
-	if config[key1] != "" && config[key2] != "" {
-		return "", false, fmt.Errorf("Mutually exclusive keys %s and %s are set", key1, key2)
-	}
-
-	_, ok = config[key1]
-	if ok {
-		return "", false, nil
-	}
-
-	_, ok = config[key2]
-	if ok {
-		return "", false, nil
-	}
-
-	return "", false, nil
-}
-
 // ValidConfig validates an instance's config.
 func ValidConfig(sysOS *sys.OS, config map[string]string, expanded bool, instanceType instancetype.Type) error {
 	if config == nil {
@@ -90,29 +72,10 @@ func ValidConfig(sysOS *sys.OS, config map[string]string, expanded bool, instanc
 	}
 
 	_, rawSeccomp := config["raw.seccomp"]
-	_, isAllow, err := exclusiveConfigKeys("security.syscalls.allow", "security.syscalls.whitelist", config)
-	if err != nil {
-		return err
-	}
-
-	_, isDeny, err := exclusiveConfigKeys("security.syscalls.deny", "security.syscalls.blacklist", config)
-	if err != nil {
-		return err
-	}
-
-	val, _, err := exclusiveConfigKeys("security.syscalls.deny_default", "security.syscalls.blacklist_default", config)
-	if err != nil {
-		return err
-	}
-
-	isDenyDefault := shared.IsTrue(val)
-
-	val, _, err = exclusiveConfigKeys("security.syscalls.deny_compat", "security.syscalls.blacklist_compat", config)
-	if err != nil {
-		return err
-	}
-
-	isDenyCompat := shared.IsTrue(val)
+	_, isAllow := config["security.syscalls.allow"]
+	_, isDeny := config["security.syscalls.deny"]
+	isDenyDefault := shared.IsTrue(config["security.syscalls.deny_default"])
+	isDenyCompat := shared.IsTrue(config["security.syscalls.deny_compat"])
 
 	if rawSeccomp && (isAllow || isDeny || isDenyDefault || isDenyCompat) {
 		return fmt.Errorf("raw.seccomp is mutually exclusive with security.syscalls*")
@@ -122,7 +85,7 @@ func ValidConfig(sysOS *sys.OS, config map[string]string, expanded bool, instanc
 		return fmt.Errorf("security.syscalls.allow is mutually exclusive with security.syscalls.deny*")
 	}
 
-	_, err = seccomp.SyscallInterceptMountFilter(config)
+	_, err := seccomp.SyscallInterceptMountFilter(config)
 	if err != nil {
 		return err
 	}
@@ -162,11 +125,15 @@ func validConfigKey(os *sys.OS, key string, value string, instanceType instancet
 		return err
 	}
 
+	if strings.HasPrefix(key, "limits.kernel.") && instanceType == instancetype.VM {
+		return fmt.Errorf("%s isn't supported for VMs", key)
+	}
+
 	if key == "raw.lxc" {
 		return lxcValidConfig(value)
 	}
 
-	if key == "security.syscalls.deny_compat" || key == "security.syscalls.blacklist_compat" {
+	if key == "security.syscalls.deny_compat" {
 		for _, arch := range os.Architectures {
 			if arch == osarch.ARCH_64BIT_INTEL_X86 ||
 				arch == osarch.ARCH_64BIT_ARMV8_LITTLE_ENDIAN ||
@@ -706,21 +673,21 @@ func ValidName(instanceName string, isSnapshot bool) error {
 		parentName, snapshotName, _ := api.GetParentAndSnapshotName(instanceName)
 		err := validate.IsHostname(parentName)
 		if err != nil {
-			return fmt.Errorf("Invalid instance name: %w", err)
+			return fmt.Errorf("Invalid instance name %q: %w", parentName, err)
 		}
 
 		// Snapshot part is more flexible, but doesn't allow space or / character.
 		if strings.ContainsAny(snapshotName, " /") {
-			return fmt.Errorf("Invalid instance snapshot name: Cannot contain space or / characters")
+			return fmt.Errorf("Invalid instance snapshot name %q: Cannot contain spaces or slashes", snapshotName)
 		}
 	} else {
 		if strings.Contains(instanceName, shared.SnapshotDelimiter) {
-			return fmt.Errorf("The character %q is reserved for snapshots", shared.SnapshotDelimiter)
+			return fmt.Errorf("Invalid instance name %q: Cannot contain slashes", instanceName)
 		}
 
 		err := validate.IsHostname(instanceName)
 		if err != nil {
-			return fmt.Errorf("Invalid instance name: %w", err)
+			return fmt.Errorf("Invalid instance name %q: %w", instanceName, err)
 		}
 	}
 
@@ -1000,7 +967,7 @@ func CreateInternal(s *state.State, args db.InstanceArgs, clearLogDir bool) (Ins
 		return nil
 	})
 	if err != nil {
-		if err == db.ErrAlreadyDefined {
+		if api.StatusErrorCheck(err, http.StatusConflict) {
 			thing := "Instance"
 			if shared.IsSnapshot(args.Name) {
 				thing = "Snapshot"

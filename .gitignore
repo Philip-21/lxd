@@ -5,6 +5,7 @@ lxd-*.tar.gz
 .vagrant
 *~
 tags
+**/*.bak
 
 # Potential binaries
 fuidshift/fuidshift
@@ -24,13 +25,14 @@ doc/html/
 doc/reference/manpages/**/*.md
 doc/.sphinx/deps/
 doc/.sphinx/.doctrees/
+doc/.sphinx/requirements.txt
 doc/.sphinx/themes/
 doc/.sphinx/venv/
 doc/.sphinx/warnings.txt
 doc/.sphinx/.wordlist.dic
 doc/.sphinx/_static/swagger-ui
 doc/.sphinx/_static/download
-doc/__pycache__
+doc/**/__pycache__
 
 # For Atom ctags
 .tags
